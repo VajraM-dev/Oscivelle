@@ -289,8 +289,7 @@ fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single:
         let mut rng = Rng(hash(seed, 100 + k as u64));
         let (step, hue_step) = if drop { (0.6, 0.25) } else { (0.25, 0.08) };
         for (v, p) in params.iter_mut().zip(&sc.params) {
-            let (lo, hi) = (p.min.min(p.max), p.min.max(p.max));
-            *v = (*v + rng.signed() * step * (hi - lo)).clamp(lo, hi);
+            *v = p.nudge(*v, rng.signed() * step);
         }
         hue = (hue + rng.signed() * hue_step).rem_euclid(1.0);
         out.push(Variation { time, params: params.clone(), hue_shift: hue });
@@ -298,12 +297,17 @@ fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single:
     out
 }
 
+/// Scene param j's uniform slot (8 params split over two vec4s).
+fn param_mut(u: &mut SceneUniforms, j: usize) -> &mut f32 {
+    if j < 4 { &mut u.p0[j] } else { &mut u.p1[j - 4] }
+}
+
 const SOURCES: [ModSource; 7] =
     [ModSource::Kick, ModSource::Bass, ModSource::Mid, ModSource::High, ModSource::Energy, ModSource::Tension, ModSource::Drop];
 
 /// 1-2 audio routings onto random non-fixed params (own rng stream, so scene/palette/variation picks are unchanged).
 fn mods(sc: &Scene, seed: u64) -> Vec<Mod> {
-    let free: Vec<usize> = (0..sc.params.len().min(8)).filter(|&i| !sc.params[i].fixed).collect();
+    let free: Vec<usize> = (0..sc.params.len()).filter(|&i| !sc.params[i].fixed).collect();
     if free.is_empty() {
         return Vec::new();
     }
@@ -380,7 +384,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             let f = smoothstep(((t - cur.time) / bar) as f32);
             for (j, (x, y)) in prev.params.iter().zip(&cur.params).take(sc.params.len().min(8)).enumerate() {
                 let val = lerp(*x, *y, f);
-                if j < 4 { u.p0[j] = val } else { u.p1[j - 4] = val }
+                *param_mut(&mut u, j) = val;
             }
             let dh = (cur.hue_shift - prev.hue_shift + 0.5).rem_euclid(1.0) - 0.5;
             u.misc[0] = (prev.hue_shift + dh * f).rem_euclid(1.0);
@@ -396,10 +400,10 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             ModSource::Drop => base.shape[2],
         };
         for m in &s.mods {
-            let Some(p) = sc.params.get(m.param).filter(|p| !p.fixed && m.param < 8) else { continue };
-            let (lo, hi) = (p.min.min(p.max), p.min.max(p.max));
-            let slot = if m.param < 4 { &mut u.p0[m.param] } else { &mut u.p1[m.param - 4] };
-            *slot = (*slot + m.depth * (hi - lo) * src(m.source)).clamp(lo, hi);
+            // Scenes have ≤ 8 params (checked at load); a hand-edited plan may name a missing or fixed one.
+            let Some(p) = sc.params.get(m.param).filter(|p| !p.fixed) else { continue };
+            let slot = param_mut(&mut u, m.param);
+            *slot = p.nudge(*slot, m.depth * src(m.source));
         }
         (sc.id.clone(), u)
     };

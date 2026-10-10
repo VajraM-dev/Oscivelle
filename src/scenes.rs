@@ -32,6 +32,14 @@ pub struct ParamRange {
     pub fixed: bool,
 }
 
+impl ParamRange {
+    /// `v` moved by `amt` × the range width, kept inside the range (min may exceed max).
+    pub fn nudge(&self, v: f32, amt: f32) -> f32 {
+        let (lo, hi) = (self.min.min(self.max), self.min.max(self.max));
+        (v + amt * (hi - lo)).clamp(lo, hi)
+    }
+}
+
 #[derive(Deserialize)]
 struct SceneToml {
     palettes: Vec<[String; 4]>,

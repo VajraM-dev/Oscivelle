@@ -84,8 +84,7 @@ fn main() {
         eprintln!("error: {e:#}");
     }
     if pause {
-        eprintln!("
-Press Enter to close.");
+        eprintln!("\nPress Enter to close.");
         let _ = std::io::stdin().read_line(&mut String::new());
     }
     if result.is_err() {
@@ -95,10 +94,7 @@ Press Enter to close.");
 
 fn guided() -> Result<()> {
     let args = wizard::to_args(&wizard::ask()?);
-    println!("
-Same thing as a command, for next time:
-  {}
-", wizard::command_line(&args));
+    println!("\nSame thing as a command, for next time:\n  {}\n", wizard::command_line(&args));
     run(Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args))?)
 }
 
