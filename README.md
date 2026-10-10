@@ -12,6 +12,12 @@ Turns a long audio file (DJ mix or production) into an MP4 with music-aware, Mil
 
 **Modulation:** each segment routes kick, bands, energy, tension or drop onto 1-2 scene params (`mods` in the plan file; `fixed = true` in a scene's `.toml` opts a param out).
 
+**Generated scenes:** `--generated <0..1>` makes some scenes from a menu of motion, emitter and colour blocks, each scored on its segment's music. `--keep N` copies one into `scenes/`.
+
+**AI vibe (optional, bring your own Anthropic or Bedrock key):** `visualiser --setup-ai`, then `--vibe "dark and liquid"` steers the generated scenes. Never required, never fails a render.
+
+**Dev:** `--author "<description>"` has the AI write a new hand-editable scene into `scenes/`; audition it with `--dev --scene <id>`.
+
 Drag a WAV, FLAC, MP3 or AIFF file onto `visualiser.exe`. It analyses the audio, plans the visuals and renders. The MP4 appears next to the source file.
 
 Options (command line):

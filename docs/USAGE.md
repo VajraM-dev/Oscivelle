@@ -13,6 +13,10 @@
 - [Files written](#files-written)
 - [Preview window](#preview-window---dev)
 - [Writing scenes](#writing-scenes)
+- [Generated scenes](#generated-scenes---generated---keep)
+- [AI features](#ai-features---setup-ai---vibe---forget-ai)
+- [Writing scenes with --author](#writing-scenes-with---author)
+- [Scene blocks](#scene-blocks)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -41,8 +45,10 @@ That runs with all defaults: Auto mode, final quality, 1080p at 30 fps, seed 1, 
 
 ## Guided mode
 
-Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, full video or a 30-second test, resolution, and optionally seed, titles and film grain. It then prints the equivalent command line, so you can copy it for next time, and renders.
+Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, an optional vibe, full video or a 30-second test, resolution, and optionally seed, titles and film grain. It then prints the equivalent command line, so you can copy it for next time, and renders.
 
+- **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
+- **Describe the vibe** is asked after the style, only when the style includes generated scenes and an AI key is set up. Type a few words or press Enter to skip. Without a key it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
 - `Esc` quits at any question.
@@ -65,7 +71,8 @@ The installer:
 - Installs per user, with no admin prompt, to `%LOCALAPPDATA%\Programs\Visualiser`.
 - Adds that folder to your user `PATH` (open a new terminal to use `visualiser` from anywhere) and creates a Start Menu entry.
 - Offers an optional desktop shortcut (you can drop audio files on it) and an optional "Make visuals" right-click entry for `.wav`, `.flac`, `.mp3`, `.aiff` and `.aif` files.
-- Uninstalls cleanly: the `PATH` entry and the right-click menu are removed.
+- Offers an optional (unchecked) "Set up AI features now" step that runs `--setup-ai` at the end of the install, and adds a "Set up AI" Start Menu entry for doing it later.
+- Uninstalls cleanly: the `PATH` entry and the right-click menu are removed, and the stored AI key is forgotten (`--forget-ai`).
 
 The C runtime is linked statically, so no Visual C++ redistributable is needed. The installer is unsigned: Windows SmartScreen may warn. Choose "More info", then "Run anyway".
 
@@ -372,6 +379,8 @@ Everything is written next to the source audio:
 | `<name>.chapters.txt` | at least 3 sections, each at least 10 s | YouTube chapters (`00:00 Title` lines), first at 00:00, ready to paste into the description. |
 | `<name>.click.wav` | `--debug` | Click track. |
 | `<name>.debug.mp4` | `--debug` | Analysis overlay video. |
+| `<name>.gen\` | plan with generated scenes | The generated scenes' shaders. Rebuilt from the plan; a new plan removes the ones it no longer uses. |
+| `<name>.vibe.json` | `--vibe` | The AI's answer for your vibe text, cached. |
 | `<name>.parts\` | during a render | Finished chunks. Deleted after a successful render. Safe to delete by hand to force a clean render. |
 
 ---
@@ -458,6 +467,84 @@ It runs 60 times a second on an HDR feedback buffer. The finish pass does tonema
 Audition with `--dev --scene <id>`, or render `--scene <id> --preview <time>` and look at frames.
 
 **Included scenes:** `liquid_tunnel`, `kaleidoscope_bloom`, `fractal_zoom`, `ink_in_water`, `neon_geometry`, `plasma_field`, `starfield_warp`.
+
+---
+
+## Generated scenes (`--generated`, `--keep`)
+
+Besides the hand-made scenes, the program can build new ones from a menu of parts: a **motion** (how the picture flows), an **emitter** (what is drawn), a **colour block** and a palette. This needs no AI and no key.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--generated <SHARE>` | `0` to `1` | the saved plan's value, else `0.5` | Share of the auto-picked segments that get a generated scene. `0` = only hand-made scenes, `1` = all generated. |
+| `--keep <N>` | segment index (0-based, as in `plan.json`) | none | Copies segment N's generated scene into `scenes\` as a normal scene. Doesn't render. |
+
+- Each generated scene is chosen by scoring candidates on **that segment's own music**. The judge renders a few seconds of each candidate small and rejects the dull, the flooded (washed to white), the noisy (TV static) and the deaf (not reacting to the kick). It catches bad ones, not great ones, so you pick favourites with `--keep`.
+- The scenes are written to `<name>.gen\`. The plan stores each scene's recipe, so re-rendering from the saved plan gives the identical video.
+- A marker's `@scene_id` and `--scene` always win over generated scenes.
+- `--generated` outside 0..1 is an error. A plain re-run reuses the saved plan's share; a different `--generated` makes a new plan.
+- If the judge can't start (for example no GPU), the plan falls back to hand-made scenes with a warning.
+
+**Keep a look you love:** `--keep` acts on the **saved plan** (the one your video was rendered from) and never re-plans. It errors if there is no saved plan, the segment doesn't exist, or that segment isn't generated.
+```
+visualiser.exe set.flac --keep 3
+```
+The scene is written to `scenes\gen_<id>.wgsl` and `.toml`. After that it is a normal hand-editable scene (see [Writing scenes](#writing-scenes)) you can use with `--scene`, `@scene_id` or in the plan.
+
+**Known limit:** scoring runs on your GPU, so a different GPU may pick a different scene when it plans again. A saved plan always renders the same.
+
+---
+
+## AI features (`--setup-ai`, `--vibe`, `--forget-ai`)
+
+Optional. You bring your own **Anthropic API key** or **Amazon Bedrock API key**. Without one, everything else works as before.
+
+| Option | Description |
+|---|---|
+| `--setup-ai` | Asks which kind of key you have, takes the key (hidden as you type; for Bedrock also the AWS region, default `us-east-1`), tests it with a tiny request and stores it in **Windows Credential Manager**. The installer's "Set up AI features now" checkbox and the Start Menu "Set up AI" entry run the same thing. |
+| `--vibe "<TEXT>"` | Describe the look in words, for example `--vibe "dark and liquid, slow"`. The AI suggests starting looks that the generated scenes then evolve from, still scored on your music. If the share of generated scenes would be 0, `--vibe` makes it 1, since a vibe only steers generated scenes. |
+| `--forget-ai` | Removes the stored key. Uninstalling does this too. |
+
+**Environment variables** take precedence over the stored key:
+
+| Variable | Use |
+|---|---|
+| `ANTHROPIC_API_KEY` | An Anthropic key. |
+| `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION` | A Bedrock key and its region (`us-east-1` if `AWS_REGION` is unset). |
+| `VISUALISER_AI_MODEL` | Overrides the model id. Defaults: `claude-sonnet-5-5` (Anthropic), `anthropic.claude-sonnet-5-5` (Bedrock). |
+
+If Bedrock answers 403 or 404, try `VISUALISER_AI_MODEL=anthropic.claude-sonnet-5`, or enable model access in the Bedrock console.
+
+- The AI only picks from the block menu. In `--vibe` it never writes shader code.
+- The answer is cached in `<name>.vibe.json`. The same vibe text on the same file makes no new call, so re-renders are identical. A new text asks again.
+- AI trouble never fails a render. With no key, or if the call fails, you get a warning and the scenes are evolved without the vibe.
+- The key is never printed and never written to project files. It is sent only to the AI service.
+
+---
+
+## Writing scenes with `--author`
+
+A developer tool. Describe a scene and the AI writes a complete, hand-editable scene (`.wgsl` + `.toml`, the format in [Writing scenes](#writing-scenes)). It needs an AI key and the audio file (for scoring).
+
+```
+visualiser.exe track.wav --author "slow aurora curtains that flare on the kick"
+```
+
+- The scene is compile-checked, with errors fed back for up to 3 tries, then scored on your audio by the same judge as [generated scenes](#generated-scenes---generated---keep). Too dark, static, flooded or noisy counts as a failed try.
+- On success it is saved to `scenes\<id>.wgsl` and `.toml`, and the program prints the command to audition it:
+  ```
+  visualiser.exe track.wav --dev --scene <id>
+  ```
+- Nothing is rendered. If you don't like the result, delete the two files.
+- With no key set up, or after 3 failed tries, it stops with an error.
+
+---
+
+## Scene blocks
+
+The parts generated scenes are built from live in `scenes\blocks\`. A motion, emitter or colour block is `<id>.wgsl` + `<id>.toml` there. The format, the functions each kind must define and the rules are in [`scenes/blocks/CONTRACT.md`](../scenes/blocks/CONTRACT.md).
+
+To add a block: copy an existing block of the kind you want, rename it and prefix its helper functions with the new id, then edit the `.toml` (`kind`, a one-line `description` the AI sees, at most 3 / 3 / 2 params for motion / emitter / colour). Blocks load at start-up, so no recompile is needed.
 
 ---
 
