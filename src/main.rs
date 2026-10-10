@@ -199,6 +199,15 @@ fn run(cli: Cli) -> Result<()> {
     } else {
         None
     };
+    // --keep acts on the saved plan as it is (the one the video was rendered from), never a new one.
+    if let Some(i) = cli.keep {
+        let plan = previous.as_ref().ok_or_else(|| anyhow!("--keep needs a saved plan: render once first"))?;
+        let seg = plan.segments.get(i).ok_or_else(|| anyhow!("--keep {i}: the plan has {} segments", plan.segments.len()))?;
+        let g = seg.genome.as_ref().ok_or_else(|| anyhow!("--keep {i}: segment {i} ({}) is not generated", seg.scene))?;
+        let id = genome::export(g, blocks.as_ref().unwrap(), &scenes_dir)?;
+        eprintln!("kept as scenes/{id}");
+        return Ok(());
+    }
     let plan = match previous {
         Some(p) if reuse => {
             eprintln!("using saved plan {}", plan_path.display());
@@ -271,14 +280,6 @@ fn run(cli: Cli) -> Result<()> {
             let blocks = blocks.as_ref().ok_or_else(|| anyhow!("plan has generated scenes but no blocks were loaded"))?;
             scenes.push(genome::write(g, blocks, &gen_dir)?);
         }
-    }
-
-    if let Some(i) = cli.keep {
-        let seg = plan.segments.get(i).ok_or_else(|| anyhow!("--keep {i}: the plan has {} segments", plan.segments.len()))?;
-        let g = seg.genome.as_ref().ok_or_else(|| anyhow!("--keep {i}: segment {i} ({}) is not generated", seg.scene))?;
-        let id = genome::export(g, blocks.as_ref().unwrap(), &scenes_dir)?;
-        eprintln!("kept as scenes/{id}");
-        return Ok(());
     }
 
     if let Some(text) = director::chapters(&plan) {
