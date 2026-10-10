@@ -6,6 +6,7 @@
 //!   name = "zoom"   # label only (ignored, like the scene's own `name`)
 //!   min = 1.002
 //!   max = 1.02
+//!   fixed = true   # optional: never audio-modulated
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -25,6 +26,10 @@ pub struct Scene {
 pub struct ParamRange {
     pub min: f32,
     pub max: f32,
+    /// Never audio-modulated: integer params (floor/round in the shader), params that multiply
+    /// time() (the phase would jump) and hue offsets (hue flicker on kicks looks cheap).
+    #[serde(default)]
+    pub fixed: bool,
 }
 
 #[derive(Deserialize)]

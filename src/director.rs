@@ -229,6 +229,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             locked: false,
             title: b.title.clone().or_else(|| kept(i).and_then(|s| s.title.clone())),
             transition_in: if i == 0 { CUT } else { b.transition },
+            mods: mods(sc, seed),
         });
     }
     // A morph window (centred on the start) may not exceed either neighbouring segment, so windows never overlap.
@@ -297,6 +298,28 @@ fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single:
     out
 }
 
+const SOURCES: [ModSource; 7] =
+    [ModSource::Kick, ModSource::Bass, ModSource::Mid, ModSource::High, ModSource::Energy, ModSource::Tension, ModSource::Drop];
+
+/// 1-2 audio routings onto random non-fixed params (own rng stream, so scene/palette/variation picks are unchanged).
+fn mods(sc: &Scene, seed: u64) -> Vec<Mod> {
+    let free: Vec<usize> = (0..sc.params.len().min(8)).filter(|&i| !sc.params[i].fixed).collect();
+    if free.is_empty() {
+        return Vec::new();
+    }
+    let mut rng = Rng(hash(seed, 4));
+    let mut out: Vec<Mod> = Vec::new();
+    for _ in 0..1 + rng.next() % 2 {
+        let param = free[(rng.next() % free.len() as u64) as usize];
+        let source = SOURCES[(rng.next() % SOURCES.len() as u64) as usize];
+        let depth = rng.signed().signum() * (0.15 + 0.25 * (rng.signed() * 0.5 + 0.5));
+        if !out.iter().any(|m| m.param == param) {
+            out.push(Mod { param, source, depth });
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- per frame
 
 /// Per-frame state at time `t` seconds. Called 60x per second of audio; must be cheap (binary searches).
@@ -361,6 +384,22 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             }
             let dh = (cur.hue_shift - prev.hue_shift + 0.5).rem_euclid(1.0) - 0.5;
             u.misc[0] = (prev.hue_shift + dh * f).rem_euclid(1.0);
+        }
+        // Audio modulation on top of the phrase variations, kept inside each param's range.
+        let src = |m: ModSource| match m {
+            ModSource::Kick => base.beat[0],
+            ModSource::Bass => base.bands[1],
+            ModSource::Mid => base.bands[2],
+            ModSource::High => base.bands[3],
+            ModSource::Energy => base.shape[0],
+            ModSource::Tension => base.shape[1],
+            ModSource::Drop => base.shape[2],
+        };
+        for m in &s.mods {
+            let Some(p) = sc.params.get(m.param).filter(|p| !p.fixed && m.param < 8) else { continue };
+            let (lo, hi) = (p.min.min(p.max), p.min.max(p.max));
+            let slot = if m.param < 4 { &mut u.p0[m.param] } else { &mut u.p1[m.param - 4] };
+            *slot = (*slot + m.depth * (hi - lo) * src(m.source)).clamp(lo, hi);
         }
         (sc.id.clone(), u)
     };
@@ -468,11 +507,10 @@ pub fn chapters(plan: &Plan) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn director_deterministic_and_reroll_is_local() {
+    fn test_analysis() -> Analysis {
         let beats: Vec<f64> = (0..1200).map(|i| i as f64 * 0.5).collect();
         let downbeats: Vec<f64> = beats.iter().step_by(4).copied().collect();
-        let a = Analysis {
+        Analysis {
             version: 1,
             source: "x.wav".into(),
             duration: 600.0,
@@ -481,20 +519,37 @@ mod tests {
             kicks: beats.iter().map(|&time| Kick { time, strength: 1.0 }).collect(),
             beats,
             downbeats,
-            curves: Curves { rate: 10.0, energy: vec![0.5; 6000], tension: vec![0.2; 6000], ..Default::default() },
+            curves: Curves {
+                rate: 10.0,
+                sub: vec![0.5; 6000],
+                bass: vec![0.5; 6000],
+                mid: vec![0.5; 6000],
+                high: vec![0.5; 6000],
+                energy: vec![0.5; 6000],
+                tension: vec![0.2; 6000],
+            },
             drops: vec![Drop { time: 64.0, build_start: 48.0, strength: 1.0 }],
             track_changes: (1..6)
                 .map(|k| TrackChange { time: k as f64 * 96.0, confidence: 0.9, kind: ChangeKind::Blend, blend_len: 8.0 })
                 .collect(),
-        };
-        let scenes: Vec<Scene> = (0..5)
+        }
+    }
+
+    fn test_scenes() -> Vec<Scene> {
+        (0..5)
             .map(|k| Scene {
                 id: format!("s{k}"),
-                params: vec![crate::scenes::ParamRange { min: 0.0, max: 1.0 }],
+                params: vec![crate::scenes::ParamRange { min: 0.0, max: 1.0, fixed: false }],
                 palettes: vec![[[0.0; 3]; 4]; 3],
                 wgsl_path: Default::default(),
             })
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn director_deterministic_and_reroll_is_local() {
+        let a = test_analysis();
+        let scenes = test_scenes();
         let req = |reroll: &'static [usize]| PlanRequest {
             analysis: &a,
             scenes: &scenes,
@@ -543,5 +598,31 @@ mod tests {
         for w in p5.segments.windows(2) {
             assert_eq!(w[0].end, w[1].start);
         }
+    }
+
+    #[test]
+    fn mods_skip_fixed_params_stay_in_range_and_move_params() {
+        let a = test_analysis();
+        let mut scenes = test_scenes();
+        for s in &mut scenes {
+            s.params = vec![
+                crate::scenes::ParamRange { min: 0.0, max: 1.0, fixed: true },
+                crate::scenes::ParamRange { min: 2.0, max: 4.0, fixed: false },
+            ];
+        }
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None };
+        let p = plan(&req).unwrap();
+        assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
+        let mut flat = p.clone();
+        for s in &mut flat.segments {
+            s.mods.clear();
+        }
+        let mut moved = false;
+        for t in [10.0, 64.0, 100.0, 300.0] {
+            let f = frame_state(&p, &a, &scenes, t, 64, 64, Quality::Draft);
+            assert!((2.0..=4.0).contains(&f.a.p0[1]), "t={t}: {}", f.a.p0[1]);
+            moved |= f.a.p0[1] != frame_state(&flat, &a, &scenes, t, 64, 64, Quality::Draft).a.p0[1];
+        }
+        assert!(moved);
     }
 }

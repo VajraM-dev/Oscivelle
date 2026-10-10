@@ -159,6 +159,29 @@ pub struct Segment {
     pub transition_in: Transition,
     /// Phrase-level variations, ascending by time; the first one is at `start`.
     pub variations: Vec<Variation>,
+    /// Audio routings for this segment: param += depth * (param range) * source, on top of the variations.
+    #[serde(default)]
+    pub mods: Vec<Mod>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Mod {
+    /// Scene param index (scene.toml order).
+    pub param: usize,
+    pub source: ModSource,
+    /// Fraction of the param's range at source = 1; negative inverts.
+    pub depth: f32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModSource {
+    Kick,
+    Bass,
+    Mid,
+    High,
+    Energy,
+    Tension,
+    Drop,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]

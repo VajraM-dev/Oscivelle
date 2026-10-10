@@ -21,11 +21,13 @@ max = 0.5
 name = "band_density"   # palette turns per iteration
 min = 0.02
 max = 0.06
+fixed = true
 
 [[param]]
 name = "hue_offset"
 min = 0.0
 max = 1.0
+fixed = true
 
 [[param]]
 name = "filaments"      # stripe-average hair detail

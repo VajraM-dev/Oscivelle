@@ -10,11 +10,13 @@ palettes = [
 name = "sides"          # polygon sides (integer)
 min = 3.0
 max = 7.0
+fixed = true
 
 [[param]]
 name = "spin"           # trail rotation, rad per step
 min = -0.012
 max = 0.012
+fixed = true
 
 [[param]]
 name = "swirl"
@@ -30,6 +32,7 @@ max = 1.006
 name = "trail_hue_drift" # turns per step as trails age
 min = -0.003
 max = 0.003
+fixed = true
 
 [[param]]
 name = "trail_length"   # per-step fade
@@ -45,3 +48,4 @@ max = 0.85
 name = "hue_offset"
 min = 0.0
 max = 1.0
+fixed = true
