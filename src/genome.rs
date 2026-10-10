@@ -138,6 +138,32 @@ pub fn write(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     Ok(sc)
 }
 
+/// Writes a genome as a hand-made scene (scenes_dir/<id>.wgsl + .toml); returns the id.
+pub fn export(g: &Genome, blocks: &Blocks, scenes_dir: &Path) -> Result<String> {
+    let sc = to_scene(g, blocks, scenes_dir)?;
+    let pal = g.palette.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(", ");
+    let mut toml = format!("name = \"{}\"\npalettes = [[{pal}]]\n", sc.id);
+    for p in &sc.params {
+        toml += &format!("\n[[param]]\nmin = {:?}\nmax = {:?}\nfixed = {}\n", p.min, p.max, p.fixed);
+    }
+    std::fs::write(&sc.wgsl_path, wgsl(g, blocks)?)?;
+    std::fs::write(sc.wgsl_path.with_extension("toml"), toml)?;
+    Ok(sc.id)
+}
+
+/// One random change: swap motion, emitter or colour, or take another palette.
+pub fn mutate(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
+    let mut out = g.clone();
+    let pick = |n: usize| (r & 0xffff_ffff) as usize % n;
+    match (r >> 32) % 4 {
+        0 => out.motion = blocks.motion[pick(blocks.motion.len())].id.clone(),
+        1 => out.emitter = blocks.emitter[pick(blocks.emitter.len())].id.clone(),
+        2 => out.colour = blocks.colour[pick(blocks.colour.len())].id.clone(),
+        _ => out.palette = blocks.palettes[pick(blocks.palettes.len())].clone(),
+    }
+    out
+}
+
 /// Uniform random genome from `r` (a 64-bit hash; consumed in 16-bit pieces).
 pub fn random(blocks: &Blocks, r: u64) -> Genome {
     let pick = |n: usize, k: u32| ((r >> (16 * k)) & 0xffff) as usize % n;

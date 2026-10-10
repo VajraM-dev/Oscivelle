@@ -272,6 +272,13 @@ impl Engine {
         self.pipelines.keys().chain(&self.failed).cloned().collect()
     }
 
+    /// Registers a scene created after construction (generated scenes); compile it with `compile`.
+    pub fn add_scene(&mut self, scene: Scene) {
+        if !self.scenes.iter().any(|s| s.id == scene.id) {
+            self.scenes.push(scene);
+        }
+    }
+
     /// (Re)compiles a scene from disk. On failure an existing pipeline is kept.
     pub fn compile(&mut self, id: &str) -> Result<()> {
         match self.try_compile(id) {

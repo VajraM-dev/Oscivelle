@@ -1,15 +1,19 @@
 mod analysis;
 mod director;
+mod evolve;
 mod genome;
+#[allow(dead_code)] mod llm;
 mod markers;
 mod preview;
 mod render;
 mod scenes;
+mod score;
 mod types;
 mod wizard;
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use types::*;
 
@@ -74,8 +78,11 @@ struct Cli {
     #[arg(long)]
     scenes: Option<PathBuf>,
     /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated).
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long, default_value_t = 0.5)]
     generated: f32,
+    /// Copy segment N's generated scene into scenes/ as a hand-made one (keep a look you love).
+    #[arg(long)]
+    keep: Option<usize>,
 }
 
 fn main() {
@@ -171,7 +178,17 @@ fn run(cli: Cli) -> Result<()> {
                     p.segments.retain(|s| s.locked);
                 }
             }
-            let random_genome = |_, _, r| Some(genome::random(blocks.as_ref()?, r));
+            // The judge (a small headless renderer) only exists while planning with generation on.
+            let judge = match &blocks {
+                Some(_) if cli.generated > 0.0 => Some(RefCell::new(score::Judge::new(&scenes, &scenes_dir, cli.cpu)?)),
+                _ => None,
+            };
+            let budget = if cli.quality == Quality::Draft { 10 } else { 20 };
+            let evolved = |start: f64, end: f64, r| {
+                let (judge, blocks) = (judge.as_ref()?, blocks.as_ref()?);
+                eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
+                evolve::best(&mut judge.borrow_mut(), blocks, &gen_dir, &analysis, start, end, r, &[], budget)
+            };
             let plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
@@ -182,7 +199,7 @@ fn run(cli: Cli) -> Result<()> {
                 reroll: &cli.reroll,
                 force_scene: cli.scene.as_deref(),
                 generated: cli.generated,
-                genome_for: Some(&random_genome),
+                genome_for: Some(&evolved),
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
             })?;
@@ -201,6 +218,14 @@ fn run(cli: Cli) -> Result<()> {
             let blocks = blocks.as_ref().ok_or_else(|| anyhow!("plan has generated scenes but no blocks were loaded"))?;
             scenes.push(genome::write(g, blocks, &gen_dir)?);
         }
+    }
+
+    if let Some(i) = cli.keep {
+        let seg = plan.segments.get(i).ok_or_else(|| anyhow!("--keep {i}: the plan has {} segments", plan.segments.len()))?;
+        let g = seg.genome.as_ref().ok_or_else(|| anyhow!("--keep {i}: segment {i} ({}) is not generated", seg.scene))?;
+        let id = genome::export(g, blocks.as_ref().unwrap(), &scenes_dir)?;
+        eprintln!("kept as scenes/{id}");
+        return Ok(());
     }
 
     if let Some(text) = director::chapters(&plan) {
