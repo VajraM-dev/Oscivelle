@@ -62,7 +62,7 @@ pub fn forget() -> Result<()> {
 fn post(c: &AiConfig, body: &Value) -> Result<Value> {
     let (url, _) = endpoint(c);
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(90)))
+        .timeout_global(Some(Duration::from_secs(240))) // --author asks for up to 8k tokens
         .http_status_as_error(false)
         .build()
         .into();
