@@ -82,16 +82,18 @@ fn post(c: &AiConfig, body: &Value) -> Result<Value> {
     Ok(v)
 }
 
-/// One forced tool call; returns the tool input JSON.
+/// One tool call; returns the tool input JSON. Sonnet 5.5 rejects a forced `tool_choice`, so the
+/// call is asked for in the system prompt instead (callers validate the input either way).
 pub fn call_tool(c: &AiConfig, system: &str, user: &str, tool: &str, description: &str, schema: Value, max_tokens: u32) -> Result<Value> {
     let (_, model) = endpoint(c);
     let body = json!({
         "model": model,
         "max_tokens": max_tokens,
-        "system": system,
+        "system": format!("{system}
+
+Always answer by calling the {tool} tool."),
         "messages": [{"role": "user", "content": user}],
         "tools": [{"name": tool, "description": description, "input_schema": schema}],
-        "tool_choice": {"type": "tool", "name": tool},
     });
     tool_input(&post(c, &body)?, tool)
 }
@@ -113,12 +115,24 @@ pub fn setup() -> Result<()> {
     let bedrock = Select::new("Which key do you have?", providers).raw_prompt()?.index == 1;
     let key = Password::new("Paste your key:").with_display_mode(PasswordDisplayMode::Masked).without_confirmation().prompt()?;
     let region = if bedrock { Some(Text::new("AWS region:").with_default("us-east-1").prompt()?) } else { None };
-    let c = AiConfig { provider: (if bedrock { "bedrock" } else { "anthropic" }).into(), key: key.trim().to_string(), region, model: None };
-    let (_, model) = endpoint(&c);
-    print!("Testing the key with {model} ... ");
-    std::io::Write::flush(&mut std::io::stdout())?;
-    post(&c, &json!({"model": model, "max_tokens": 8, "messages": [{"role": "user", "content": "Say ok"}]}))?;
-    println!("works.");
+    let mut c = AiConfig { provider: (if bedrock { "bedrock" } else { "anthropic" }).into(), key: key.trim().to_string(), region, model: None };
+    let test = |c: &AiConfig| -> Result<()> {
+        let (_, model) = endpoint(c);
+        print!("Testing the key with {model} ... ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        post(c, &json!({"model": model, "max_tokens": 64, "messages": [{"role": "user", "content": "Say ok"}]}))?;
+        println!("works.");
+        Ok(())
+    };
+    if let Err(e) = test(&c) {
+        // Sonnet 5.5 needs model access enabled on Bedrock (or isn't in every region); Sonnet 5 is open to everyone.
+        if !(bedrock && e.to_string().contains("404")) {
+            return Err(e);
+        }
+        println!("not available ({e:#}).");
+        c.model = Some("anthropic.claude-sonnet-5".into());
+        test(&c)?;
+    }
     save(&c)?;
     println!("Saved. In guided mode you'll now be asked to describe the vibe; on the command line use --vibe \"...\".");
     Ok(())

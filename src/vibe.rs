@@ -52,7 +52,7 @@ pub fn genomes(c: &AiConfig, blocks: &Blocks, a: &Analysis, vibe: &str, cache: &
         }}},
         "required": ["genomes"]
     });
-    let input = llm::call_tool(c, &system, &user, "submit_looks", "Submit the looks", schema, 2000)?;
+    let input = llm::call_tool(c, &system, &user, "submit_looks", "Submit the looks", schema, 8000)?;
     let out = parse(&input, blocks);
     // A failed cache write must not lose the genomes.
     let _ = std::fs::write(cache, serde_json::to_string_pretty(&Cache { vibe: vibe.into(), genomes: out.clone() })?);
