@@ -115,7 +115,13 @@ pub fn setup() -> Result<()> {
     let bedrock = Select::new("Which key do you have?", providers).raw_prompt()?.index == 1;
     let key = Password::new("Paste your key:").with_display_mode(PasswordDisplayMode::Masked).without_confirmation().prompt()?;
     let region = if bedrock { Some(Text::new("AWS region:").with_default("us-east-1").prompt()?) } else { None };
-    let mut c = AiConfig { provider: (if bedrock { "bedrock" } else { "anthropic" }).into(), key: key.trim().to_string(), region, model: None };
+    // Bedrock accounts differ in which models they can use (e.g. global.anthropic.claude-haiku-5-5).
+    let model = if bedrock {
+        Some(Text::new("Model id (Enter for the default):").with_default("anthropic.claude-sonnet-5-5").prompt()?.trim().to_string())
+    } else {
+        None
+    };
+    let mut c = AiConfig { provider: (if bedrock { "bedrock" } else { "anthropic" }).into(), key: key.trim().to_string(), region, model };
     let test = |c: &AiConfig| -> Result<()> {
         let (_, model) = endpoint(c);
         print!("Testing the key with {model} ... ");
@@ -126,7 +132,7 @@ pub fn setup() -> Result<()> {
     };
     if let Err(e) = test(&c) {
         // Sonnet 5.5 needs model access enabled on Bedrock (or isn't in every region); Sonnet 5 is open to everyone.
-        if !(bedrock && e.to_string().contains("404")) {
+        if !(bedrock && e.to_string().contains("404")) || c.model.as_deref() == Some("anthropic.claude-sonnet-5") {
             return Err(e);
         }
         println!("not available ({e:#}).");
