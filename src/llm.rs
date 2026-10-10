@@ -25,10 +25,18 @@ const ACCOUNT: &str = "ai";
 pub fn endpoint(c: &AiConfig) -> (String, String) {
     let model = std::env::var("VISUALISER_AI_MODEL").ok().or_else(|| c.model.clone());
     match c.provider.as_str() {
-        "bedrock" => (
-            format!("https://bedrock-mantle.{}.api.aws/anthropic/v1/messages", c.region.as_deref().unwrap_or("us-east-1")),
-            model.unwrap_or_else(|| "anthropic.claude-sonnet-5-5".into()),
-        ),
+        "bedrock" => {
+            let region = c.region.as_deref().unwrap_or("us-east-1");
+            let model = model.unwrap_or_else(|| "anthropic.claude-sonnet-5-5".into());
+            // Inference-profile ids (global./us./... or an ARN) only exist on the InvokeModel API;
+            // some accounts can only use that one.
+            let url = if model.starts_with("anthropic.") {
+                format!("https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages")
+            } else {
+                format!("https://bedrock-runtime.{region}.amazonaws.com/model/{}/invoke", model.replace(':', "%3A").replace('/', "%2F"))
+            };
+            (url, model)
+        }
         _ => ("https://api.anthropic.com/v1/messages".into(), model.unwrap_or_else(|| "claude-sonnet-5-5".into())),
     }
 }
@@ -66,13 +74,17 @@ fn post(c: &AiConfig, body: &Value) -> Result<Value> {
         .http_status_as_error(false)
         .build()
         .into();
-    // Both providers take x-api-key; bedrock-mantle rejects requests that also carry Authorization.
-    let mut resp = agent
-        .post(&url)
-        .header("x-api-key", &c.key)
-        .header("anthropic-version", "2023-06-01")
-        .send_json(body)
-        .map_err(|e| anyhow!("AI request failed: {e}"))?;
+    let resp = if url.contains("bedrock-runtime") {
+        // InvokeModel: model in the URL, version in the body, key as a bearer token.
+        let mut body = body.clone();
+        body.as_object_mut().context("request body")?.remove("model");
+        body["anthropic_version"] = json!("bedrock-2023-05-31");
+        agent.post(&url).header("Authorization", format!("Bearer {}", c.key)).send_json(&body)
+    } else {
+        // Anthropic and bedrock-mantle take x-api-key; mantle rejects requests that also carry Authorization.
+        agent.post(&url).header("x-api-key", &c.key).header("anthropic-version", "2023-06-01").send_json(body)
+    };
+    let mut resp = resp.map_err(|e| anyhow!("AI request failed: {e}"))?;
     let status = resp.status().as_u16();
     let v: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
     if status != 200 {
@@ -115,12 +127,10 @@ pub fn setup() -> Result<()> {
     let bedrock = Select::new("Which key do you have?", providers).raw_prompt()?.index == 1;
     let key = Password::new("Paste your key:").with_display_mode(PasswordDisplayMode::Masked).without_confirmation().prompt()?;
     let region = if bedrock { Some(Text::new("AWS region:").with_default("us-east-1").prompt()?) } else { None };
-    // Bedrock accounts differ in which models they may use; the Messages endpoint takes bare
-    // `anthropic.` ids, so an inference-profile prefix (us., global., ...) pasted from the console is dropped.
+    // Bedrock accounts differ in which models (and which of its two APIs) they may use:
+    // `anthropic.…` ids go to the Messages endpoint, `global.anthropic.…`-style ids to InvokeModel.
     let model = if bedrock {
-        let m = Text::new("Model id (Enter for the default):").with_default("anthropic.claude-sonnet-5-5").prompt()?;
-        let m = m.trim();
-        Some(m.find("anthropic.").map_or(m, |i| &m[i..]).to_string())
+        Some(Text::new("Model id (Enter for the default):").with_default("anthropic.claude-sonnet-5-5").prompt()?.trim().to_string())
     } else {
         None
     };
@@ -177,6 +187,8 @@ mod tests {
         let b = AiConfig { provider: "bedrock".into(), key: "k".into(), region: Some("eu-west-1".into()), model: None };
         assert_eq!(endpoint(&b).0, "https://bedrock-mantle.eu-west-1.api.aws/anthropic/v1/messages");
         assert!(endpoint(&b).1.starts_with("anthropic.claude-"));
+        let g = AiConfig { model: Some("global.anthropic.claude-haiku-5-5".into()), ..b.clone() };
+        assert_eq!(endpoint(&g).0, "https://bedrock-runtime.eu-west-1.amazonaws.com/model/global.anthropic.claude-haiku-5-5/invoke");
         let a = AiConfig { provider: "anthropic".into(), ..b };
         assert_eq!(endpoint(&a).0, "https://api.anthropic.com/v1/messages");
         let resp = json!({"content": [{"type": "text", "text": "hi"}, {"type": "tool_use", "name": "submit", "input": {"x": 1}}]});

@@ -513,7 +513,7 @@ Optional. You bring your own **Anthropic API key** or **Amazon Bedrock API key**
 | `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION` | A Bedrock key and its region (`us-east-1` if `AWS_REGION` is unset). |
 | `VISUALISER_AI_MODEL` | Overrides the model id. Defaults: `claude-sonnet-5-5` (Anthropic), `anthropic.claude-sonnet-5-5` (Bedrock). |
 
-With a Bedrock key, `--setup-ai` also asks for the model id. Use the bare `anthropic.` id (e.g. `anthropic.claude-haiku-5-5`): this endpoint has no `us.`/`global.` inference-profile ids, and a pasted prefix is dropped. If your account can't use that model (403/404), setup tries the models open to every Bedrock account (`anthropic.claude-sonnet-5`, `anthropic.claude-haiku-4-5`, `anthropic.claude-opus-4-8`) and saves the first that works. If none work, enable a Claude model under Amazon Bedrock > Model access.
+With a Bedrock key, `--setup-ai` also asks for the model id. A bare id like `anthropic.claude-haiku-5-5` uses Bedrock's Messages endpoint (`bedrock-mantle`); an inference-profile id like `global.anthropic.claude-haiku-5-5` (or an ARN) uses the InvokeModel API (`bedrock-runtime`) instead. Some accounts can only use one of the two, so use whichever id works in your Bedrock console. If the model answers 403/404, setup tries the models open to every Bedrock account (`anthropic.claude-sonnet-5`, `anthropic.claude-haiku-4-5`, `anthropic.claude-opus-4-8`) and saves the first that works.
 
 - The AI only picks from the block menu. In `--vibe` it never writes shader code.
 - The answer is cached in `<name>.vibe.json`. The same vibe text on the same file makes no new call, so re-renders are identical. A new text asks again.
