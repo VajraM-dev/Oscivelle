@@ -19,6 +19,8 @@ pub struct PlanRequest<'a> {
     pub force_scene: Option<&'a str>,
     /// Fraction (0..1) of auto-picked segments that get a generated scene.
     pub generated: f32,
+    /// --vibe text (only steers generated scenes; a change replans unlocked segments).
+    pub vibe: Option<&'a str>,
     /// Supplies a genome for a generated segment: (start, end, seed) -> genome, None = fall back to curated.
     pub genome_for: Option<&'a dyn Fn(f64, f64, u64) -> Option<Genome>>,
     pub blocks: Option<&'a Blocks>,
@@ -27,17 +29,6 @@ pub struct PlanRequest<'a> {
 }
 
 // ---------------------------------------------------------------- rng
-
-fn mix64(z: u64) -> u64 {
-    let z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn hash(a: u64, b: u64) -> u64 {
-    mix64(a ^ mix64(b))
-}
 
 /// splitmix64 stream.
 struct Rng(u64);
@@ -175,7 +166,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         .iter()
         .map(|b| req.previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
         .collect();
-    let same_plan = req.previous.is_some_and(|p| p.seed == req.seed && p.mode == req.mode && p.generated == req.generated);
+    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe));
     let locked = |i: usize| prev[i].filter(|s| s.locked);
     let kept = |i: usize| prev[i].filter(|_| same_plan);
     // Source name mixed in so different files get different takes at the same seed.
@@ -283,7 +274,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: None, segments })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
@@ -610,6 +601,7 @@ mod tests {
             reroll,
             force_scene: None,
             generated: 0.0,
+            vibe: None,
             genome_for: None,
             blocks: None,
             gen_dir: Path::new("."),
@@ -664,7 +656,7 @@ mod tests {
                 crate::scenes::ParamRange { min: 2.0, max: 4.0, fixed: false },
             ];
         }
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, genome_for: None, blocks: None, gen_dir: Path::new(".") };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new(".") };
         let p = plan(&req).unwrap();
         assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
         let mut flat = p.clone();
@@ -707,6 +699,7 @@ mod tests {
             reroll,
             force_scene: None,
             generated: 1.0,
+            vibe: None,
             genome_for: Some(&gen),
             blocks: Some(&blocks),
             gen_dir: Path::new("."),

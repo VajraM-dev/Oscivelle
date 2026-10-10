@@ -59,7 +59,7 @@ pub fn run(c: &crate::llm::AiConfig, judge: &mut crate::score::Judge, scenes_dir
 }
 
 /// Writes the scene to `tmp`, parses, compiles and scores it. Retrying with the same id recompiles:
-/// the judge keeps the first Scene for an id, but its wgsl_path is the same tmp file, re-read on compile.
+/// the judge forgets each scene after scoring it.
 fn try_scene(judge: &mut crate::score::Judge, scenes_dir: &Path, analysis: &crate::types::Analysis, tmp: &Path, id: &str, wgsl: &str, toml: &str) -> Result<()> {
     if !valid_id(id, scenes_dir) {
         bail!("id '{id}' must match ^[a-z][a-z0-9_]{{2,30}}$ and not be an existing scene");

@@ -279,6 +279,13 @@ impl Engine {
         }
     }
 
+    /// Forgets a scene and its compiled pipeline.
+    pub fn remove_scene(&mut self, id: &str) {
+        self.scenes.retain(|s| s.id != id);
+        self.pipelines.remove(id);
+        self.failed.remove(id);
+    }
+
     /// (Re)compiles a scene from disk. On failure an existing pipeline is kept.
     pub fn compile(&mut self, id: &str) -> Result<()> {
         match self.try_compile(id) {

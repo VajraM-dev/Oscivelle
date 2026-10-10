@@ -18,15 +18,19 @@ pub fn best(
 ) -> Option<Genome> {
     // Score window: 4 s, 30 s into the segment (or its middle if shorter).
     let t0 = (start + 30.0).min((start + end) / 2.0);
+    // Each distinct genome is rendered once (mutants and random picks repeat).
+    let mut seen = std::collections::HashMap::new();
     let mut score = |g: &Genome| -> Option<f32> {
-        let sc = genome::write(g, blocks, gen_dir).ok()?;
-        judge.judge(sc, a, t0, 4.0).ok().flatten()
+        *seen.entry(g.id()).or_insert_with(|| {
+            let sc = genome::write(g, blocks, gen_dir).ok()?;
+            judge.judge(sc, a, t0, 4.0).ok().flatten()
+        })
     };
     let first = (budget * 2 / 5).max(2);
     let mut pop: Vec<Genome> = seeds.iter().take(first).cloned().collect();
     let mut k = 0u64;
     while pop.len() < first {
-        pop.push(genome::random(blocks, hash64(seed, k)));
+        pop.push(genome::random(blocks, hash(seed, k)));
         k += 1;
     }
     let mut scored: Vec<(f32, Genome)> = pop.into_iter().filter_map(|g| Some((score(&g)?, g))).collect();
@@ -35,15 +39,11 @@ pub fn best(
     let per = budget.saturating_sub(first) / parents.len().max(1);
     for (pi, p) in parents.iter().enumerate() {
         for j in 0..per {
-            let child = genome::mutate(p, blocks, hash64(seed, 1000 + (pi * 100 + j) as u64));
+            let child = genome::mutate(p, blocks, hash(seed, 1000 + (pi * 100 + j) as u64));
             if let Some(s) = score(&child) {
                 scored.push((s, child));
             }
         }
     }
     scored.into_iter().max_by(|x, y| x.0.total_cmp(&y.0)).map(|x| x.1)
-}
-
-fn hash64(a: u64, b: u64) -> u64 {
-    fnv1a(&[a.to_le_bytes(), b.to_le_bytes()].concat())
 }

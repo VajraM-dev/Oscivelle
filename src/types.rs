@@ -15,6 +15,19 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 
+/// splitmix64 finaliser.
+pub fn mix64(z: u64) -> u64 {
+    let z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Stable 64-bit hash of two values (per-segment / per-candidate seeds).
+pub fn hash(a: u64, b: u64) -> u64 {
+    mix64(a ^ mix64(b))
+}
+
 /// "M:SS", or "H:MM:SS" when `long` (or the value is an hour or more).
 pub fn hms(secs: u64, long: bool) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
@@ -146,6 +159,13 @@ pub struct Plan {
     pub vibe: Option<String>,
     /// Scene changes (one per track/marker); contiguous, first starts at 0, last ends at duration.
     pub segments: Vec<Segment>,
+}
+
+impl Plan {
+    /// Made with these settings (its unlocked segments still apply).
+    pub fn same_inputs(&self, seed: u64, mode: Mode, generated: f32, vibe: Option<&str>) -> bool {
+        self.seed == seed && self.mode == mode && self.generated == generated && self.vibe.as_deref() == vibe
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

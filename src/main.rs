@@ -15,7 +15,7 @@ mod wizard;
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 use types::*;
 
@@ -191,7 +191,7 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.seed == cli.seed && p.mode == mode && p.generated == generated && p.vibe == cli.vibe);
+        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()));
     // Blocks only when something is (or was) generated.
     let gen_dir = sibling(&audio, "gen");
     let blocks = if generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
@@ -215,42 +215,25 @@ fn run(cli: Cli) -> Result<()> {
         }
         mut previous => {
             // --replan keeps only locked segments from the saved plan.
-            // So does a changed vibe (the director would otherwise keep the old looks).
-            if cli.replan || previous.as_ref().is_some_and(|p| p.vibe != cli.vibe) {
+            if cli.replan {
                 if let Some(p) = &mut previous {
                     p.segments.retain(|s| s.locked);
                 }
             }
-            // The judge (a small headless renderer) only exists while planning with generation on.
-            let judge = match &blocks {
-                Some(_) if generated > 0.0 => Some(RefCell::new(score::Judge::new(&scenes, &scenes_dir, cli.cpu)?)),
-                _ => None,
-            };
-            // Vibe -> starting genomes. AI trouble never fails a render: warn and evolve without seeds.
-            let seeds = match (&cli.vibe, &blocks, &judge) {
-                (Some(v), Some(blocks), Some(_)) => match llm::load() {
-                    None => {
-                        eprintln!("warning: no AI key set up (run visualiser --setup-ai); continuing without the vibe");
-                        Vec::new()
-                    }
-                    Some(c) => vibe::genomes(&c, blocks, &analysis, v, &sibling(&audio, "vibe.json")).unwrap_or_else(|e| {
-                        eprintln!("warning: vibe failed ({e:#}); continuing without it");
-                        Vec::new()
-                    }),
-                },
-                _ => Vec::new(),
-            };
+            // Judge + vibe seeds, made on the first segment that is actually generated.
+            let gen = OnceCell::new();
             // Each generated segment starts from a different seed.
             let k = Cell::new(0);
             let budget = if cli.quality == Quality::Draft { 10 } else { 20 };
             let evolved = |start: f64, end: f64, r| {
-                let (judge, blocks) = (judge.as_ref()?, blocks.as_ref()?);
+                let blocks = blocks.as_ref().filter(|_| generated > 0.0)?;
                 eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
+                let (judge, seeds) = gen.get_or_init(|| generator(&cli, &scenes, &scenes_dir, blocks, &analysis, &audio)).as_ref().ok()?;
                 let i = k.replace(k.get() + 1) % seeds.len().max(1);
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
                 evolve::best(&mut judge.borrow_mut(), blocks, &gen_dir, &analysis, start, end, r, &rotated, budget)
             };
-            let mut plan = director::plan(&director::PlanRequest {
+            let plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
                 mode,
@@ -260,11 +243,14 @@ fn run(cli: Cli) -> Result<()> {
                 reroll: &cli.reroll,
                 force_scene: cli.scene.as_deref(),
                 generated,
+                vibe: cli.vibe.as_deref(),
                 genome_for: Some(&evolved),
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
             })?;
-            plan.vibe = cli.vibe.clone();
+            if let Some(Err(e)) = gen.into_inner() {
+                return Err(e);
+            }
             // The dev --scene plan is throwaway; don't overwrite the real one.
             if cli.scene.is_none() {
                 std::fs::write(&plan_path, serde_json::to_string_pretty(&plan)?)?;
@@ -279,6 +265,17 @@ fn run(cli: Cli) -> Result<()> {
         if !scenes.iter().any(|s| s.id == g.id()) {
             let blocks = blocks.as_ref().ok_or_else(|| anyhow!("plan has generated scenes but no blocks were loaded"))?;
             scenes.push(genome::write(g, blocks, &gen_dir)?);
+        }
+    }
+    // A new plan leaves losing candidates (and the old plan's scenes) in gen_dir: drop them.
+    // Not for the throwaway --scene plan, which would delete the saved plan's scenes.
+    if !reuse && cli.scene.is_none() {
+        let used: Vec<String> = plan.segments.iter().filter_map(|s| Some(format!("{}.wgsl", s.genome.as_ref()?.id()))).collect();
+        for e in std::fs::read_dir(&gen_dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".wgsl") && !used.contains(&name) {
+                let _ = std::fs::remove_file(e.path());
+            }
         }
     }
 
@@ -345,6 +342,26 @@ fn run(cli: Cli) -> Result<()> {
     render::render_video(&job(out.clone(), cli.quality, width, height, false))?;
     eprintln!("done: {}", out.display());
     Ok(())
+}
+
+/// The judge (a small headless renderer) and the vibe's starting genomes.
+/// AI trouble never fails a render: warn and evolve without seeds.
+fn generator(cli: &Cli, scenes: &[scenes::Scene], scenes_dir: &Path, blocks: &genome::Blocks, analysis: &Analysis, audio: &Path) -> Result<(RefCell<score::Judge>, Vec<genome::Genome>)> {
+    let judge = RefCell::new(score::Judge::new(scenes, scenes_dir, cli.cpu)?);
+    let seeds = match &cli.vibe {
+        None => Vec::new(),
+        Some(v) => match llm::load() {
+            None => {
+                eprintln!("warning: no AI key set up (run visualiser --setup-ai); continuing without the vibe");
+                Vec::new()
+            }
+            Some(c) => vibe::genomes(&c, blocks, analysis, v, &sibling(audio, "vibe.json")).unwrap_or_else(|e| {
+                eprintln!("warning: vibe failed ({e:#}); continuing without it");
+                Vec::new()
+            }),
+        },
+    };
+    Ok((judge, seeds))
 }
 
 fn load_or_analyse(audio: &Path, reanalyse: bool) -> Result<Analysis> {

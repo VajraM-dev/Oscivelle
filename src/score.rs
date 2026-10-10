@@ -116,8 +116,16 @@ impl Judge {
     }
 
     /// Compiles `scene` (Err = doesn't compile; message is the compiler's) and scores `secs` seconds of it
-    /// from `t0`, using palette 0, params at range midpoints, no mods.
+    /// from `t0`, using palette 0, params at range midpoints, no mods. The scene is dropped from the
+    /// judge afterwards, so the judge doesn't grow and a later scene with the same id compiles afresh.
     pub fn judge(&mut self, scene: Scene, analysis: &Analysis, t0: f64, secs: f64) -> Result<Option<f32>> {
+        let id = scene.id.clone();
+        let r = self.score(scene, analysis, t0, secs);
+        self.engine.remove_scene(&id);
+        r
+    }
+
+    fn score(&mut self, scene: Scene, analysis: &Analysis, t0: f64, secs: f64) -> Result<Option<f32>> {
         let id = scene.id.clone();
         let mid: Vec<f32> = scene.params.iter().map(|p| (p.min + p.max) / 2.0).collect();
         let scenes = [scene];
