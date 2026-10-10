@@ -115,29 +115,53 @@ pub fn setup() -> Result<()> {
     let bedrock = Select::new("Which key do you have?", providers).raw_prompt()?.index == 1;
     let key = Password::new("Paste your key:").with_display_mode(PasswordDisplayMode::Masked).without_confirmation().prompt()?;
     let region = if bedrock { Some(Text::new("AWS region:").with_default("us-east-1").prompt()?) } else { None };
-    // Bedrock accounts differ in which models they can use (e.g. global.anthropic.claude-haiku-5-5).
+    // Bedrock accounts differ in which models they may use; the Messages endpoint takes bare
+    // `anthropic.` ids, so an inference-profile prefix (us., global., ...) pasted from the console is dropped.
     let model = if bedrock {
-        Some(Text::new("Model id (Enter for the default):").with_default("anthropic.claude-sonnet-5-5").prompt()?.trim().to_string())
+        let m = Text::new("Model id (Enter for the default):").with_default("anthropic.claude-sonnet-5-5").prompt()?;
+        let m = m.trim();
+        Some(m.find("anthropic.").map_or(m, |i| &m[i..]).to_string())
     } else {
         None
     };
     let mut c = AiConfig { provider: (if bedrock { "bedrock" } else { "anthropic" }).into(), key: key.trim().to_string(), region, model };
-    let test = |c: &AiConfig| -> Result<()> {
-        let (_, model) = endpoint(c);
+    // On Bedrock, a model the account can't use (403/404) falls through to the ones open to every account.
+    let fallbacks = if bedrock { ["anthropic.claude-sonnet-5", "anthropic.claude-haiku-4-5", "anthropic.claude-opus-4-8"].as_slice() } else { &[] };
+    let mut tries = c.model.clone().into_iter().map(Some).chain(fallbacks.iter().map(|m| Some(m.to_string()))).collect::<Vec<_>>();
+    if tries.is_empty() {
+        tries.push(None);
+    }
+    let mut seen = Vec::new();
+    tries.retain(|m| if seen.contains(m) { false } else { seen.push(m.clone()); true });
+    let mut last = None;
+    for m in tries {
+        c.model = m;
+        let (_, model) = endpoint(&c);
         print!("Testing the key with {model} ... ");
         std::io::Write::flush(&mut std::io::stdout())?;
-        post(c, &json!({"model": model, "max_tokens": 64, "messages": [{"role": "user", "content": "Say ok"}]}))?;
-        println!("works.");
-        Ok(())
-    };
-    if let Err(e) = test(&c) {
-        // Sonnet 5.5 needs model access enabled on Bedrock (or isn't in every region); Sonnet 5 is open to everyone.
-        if !(bedrock && e.to_string().contains("404")) || c.model.as_deref() == Some("anthropic.claude-sonnet-5") {
-            return Err(e);
+        match post(&c, &json!({"model": model, "max_tokens": 64, "messages": [{"role": "user", "content": "Say ok"}]})) {
+            Ok(_) => {
+                println!("works.");
+                last = None;
+                break;
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                println!("no ({msg}).");
+                let model_problem = msg.contains(" 403:") || msg.contains(" 404:");
+                last = Some(e);
+                if !bedrock || !model_problem {
+                    break;
+                }
+            }
         }
-        println!("not available ({e:#}).");
-        c.model = Some("anthropic.claude-sonnet-5".into());
-        test(&c)?;
+    }
+    if let Some(e) = last {
+        if bedrock {
+            bail!("{e:#}
+No Claude model worked with this key. In the AWS console, open Amazon Bedrock > Model access for this region, enable a Claude model, and check the key's permissions.");
+        }
+        return Err(e);
     }
     save(&c)?;
     println!("Saved. In guided mode you'll now be asked to describe the vibe; on the command line use --vibe \"...\".");
