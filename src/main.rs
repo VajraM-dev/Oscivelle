@@ -79,9 +79,9 @@ struct Cli {
     /// Scenes folder. Default: scenes/ next to the program, else ./scenes, else the source tree's scenes/.
     #[arg(long)]
     scenes: Option<PathBuf>,
-    /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated).
-    #[arg(long, default_value_t = 0.5)]
-    generated: f32,
+    /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated). Default: the saved plan's value, else 0.5.
+    #[arg(long)]
+    generated: Option<f32>,
     /// Copy segment N's generated scene into scenes/ as a hand-made one (keep a look you love).
     #[arg(long)]
     keep: Option<usize>,
@@ -154,11 +154,9 @@ fn run(cli: Cli) -> Result<()> {
             .unwrap_or_else(|| "scenes".into())
     });
     let mut scenes = scenes::load_all(&scenes_dir)?;
-    if !(0.0..=1.0).contains(&cli.generated) {
+    if cli.generated.is_some_and(|g| !(0.0..=1.0).contains(&g)) {
         bail!("--generated must be between 0 and 1");
     }
-    // A vibe only steers generated scenes, so it implies some.
-    let generated = if cli.vibe.is_some() && cli.generated == 0.0 { 1.0 } else { cli.generated };
 
     let analysis = load_or_analyse(&audio, cli.reanalyse)?;
 
@@ -186,6 +184,10 @@ fn run(cli: Cli) -> Result<()> {
 
     let plan_path = sibling(&audio, "plan.json");
     let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
+    // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
+    let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
+    // A vibe only steers generated scenes, so it implies some.
+    let generated = if cli.vibe.is_some() && generated == 0.0 { 1.0 } else { generated };
     let reuse = !cli.replan
         && !cli.reanalyse
         && cli.reroll.is_empty()
@@ -248,8 +250,9 @@ fn run(cli: Cli) -> Result<()> {
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
             })?;
+            // No judge (e.g. no GPU): the plan above already fell back to hand-made scenes.
             if let Some(Err(e)) = gen.into_inner() {
-                return Err(e);
+                eprintln!("warning: can't generate scenes ({e:#}); using hand-made ones");
             }
             // The dev --scene plan is throwaway; don't overwrite the real one.
             if cli.scene.is_none() {

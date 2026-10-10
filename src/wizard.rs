@@ -99,11 +99,14 @@ pub fn ask() -> Result<Answers> {
         2 => Some(1.0),
         _ => None,
     };
-    if llm::load().is_some() {
-        let t = Text::new("Describe the vibe (optional, Enter to skip):").prompt()?;
-        a.vibe = Some(t.trim().to_string()).filter(|t| !t.is_empty());
-    } else {
-        println!("\x1b[2mTip: run \"visualiser --setup-ai\" to describe visuals in words.\x1b[0m");
+    // Hand-made only has nothing for a vibe to steer.
+    if a.generated != Some(0.0) {
+        if llm::load().is_some() {
+            let t = Text::new("Describe the vibe (optional, Enter to skip):").prompt()?;
+            a.vibe = Some(t.trim().to_string()).filter(|t| !t.is_empty());
+        } else {
+            println!("\x1b[2mTip: run \"visualiser --setup-ai\" to describe visuals in words.\x1b[0m");
+        }
     }
 
     let kinds = vec!["Full video", "Quick 30-second test (draft quality, fast)"];
@@ -173,7 +176,7 @@ mod tests {
         assert_eq!(cli.mode, Some(Mode::Single));
         assert_eq!(cli.quality, Quality::Draft);
         assert_eq!(cli.seed, 7);
-        assert_eq!(cli.generated, 1.0);
+        assert_eq!(cli.generated, Some(1.0));
         assert_eq!(cli.vibe.as_deref(), Some("dark and liquid"));
         assert!(cli.no_grain && !cli.no_titles);
     }

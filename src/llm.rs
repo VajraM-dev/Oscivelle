@@ -35,10 +35,11 @@ pub fn endpoint(c: &AiConfig) -> (String, String) {
 
 /// Env vars first (ANTHROPIC_API_KEY, or AWS_BEARER_TOKEN_BEDROCK + AWS_REGION), then Credential Manager.
 pub fn load() -> Option<AiConfig> {
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+    let env = |k| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    if let Some(key) = env("ANTHROPIC_API_KEY") {
         return Some(AiConfig { provider: "anthropic".into(), key, region: None, model: None });
     }
-    if let Ok(key) = std::env::var("AWS_BEARER_TOKEN_BEDROCK") {
+    if let Some(key) = env("AWS_BEARER_TOKEN_BEDROCK") {
         return Some(AiConfig { provider: "bedrock".into(), key, region: std::env::var("AWS_REGION").ok(), model: None });
     }
     let s = keyring::Entry::new(SERVICE, ACCOUNT).ok()?.get_password().ok()?;
@@ -65,10 +66,12 @@ fn post(c: &AiConfig, body: &Value) -> Result<Value> {
         .http_status_as_error(false)
         .build()
         .into();
-    let mut resp = agent
-        .post(&url)
-        .header("x-api-key", &c.key)
-        .header("anthropic-version", "2023-06-01")
+    let mut req = agent.post(&url).header("x-api-key", &c.key).header("anthropic-version", "2023-06-01");
+    if c.provider == "bedrock" {
+        // Unverified which one the bedrock-mantle endpoint wants: send both.
+        req = req.header("Authorization", format!("Bearer {}", c.key));
+    }
+    let mut resp = req
         .send_json(body)
         .map_err(|e| anyhow!("AI request failed: {e}"))?;
     let status = resp.status().as_u16();

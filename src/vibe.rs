@@ -17,7 +17,10 @@ struct Cache {
 
 pub fn genomes(c: &AiConfig, blocks: &Blocks, a: &Analysis, vibe: &str, cache: &Path) -> Result<Vec<Genome>> {
     if let Some(hit) = std::fs::read_to_string(cache).ok().and_then(|s| serde_json::from_str::<Cache>(&s).ok()).filter(|h| h.vibe == vibe) {
-        return Ok(hit.genomes);
+        let ok: Vec<_> = hit.genomes.into_iter().filter(|g| valid(g, blocks)).collect();
+        if !ok.is_empty() {
+            return Ok(ok);
+        }
     }
     let menu = |list: &[Block]| list.iter().map(|b| format!("- {}: {}", b.id, b.description)).collect::<Vec<_>>().join("\n");
     let ids = |list: &[Block]| list.iter().map(|b| b.id.clone()).collect::<Vec<_>>();
@@ -51,7 +54,8 @@ pub fn genomes(c: &AiConfig, blocks: &Blocks, a: &Analysis, vibe: &str, cache: &
     });
     let input = llm::call_tool(c, &system, &user, "submit_looks", "Submit the looks", schema, 2000)?;
     let out = parse(&input, blocks);
-    std::fs::write(cache, serde_json::to_string_pretty(&Cache { vibe: vibe.into(), genomes: out.clone() })?)?;
+    // A failed cache write must not lose the genomes.
+    let _ = std::fs::write(cache, serde_json::to_string_pretty(&Cache { vibe: vibe.into(), genomes: out.clone() })?);
     Ok(out)
 }
 
@@ -62,8 +66,12 @@ fn parse(input: &serde_json::Value, blocks: &Blocks) -> Vec<Genome> {
         .into_iter()
         .flatten()
         .filter_map(|g| serde_json::from_value::<Genome>(g.clone()).ok())
-        .filter(|g| blocks.parts(g).is_ok() && crate::scenes::palette(&g.palette).is_ok())
+        .filter(|g| valid(g, blocks))
         .collect()
+}
+
+fn valid(g: &Genome, blocks: &Blocks) -> bool {
+    blocks.parts(g).is_ok() && crate::scenes::palette(&g.palette).is_ok()
 }
 
 #[cfg(test)]
