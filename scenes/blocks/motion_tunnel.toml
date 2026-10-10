@@ -1,0 +1,17 @@
+kind = "motion"
+description = "Flight down a tube: zoom out of a wandering vanishing point with depth twist, trails stream outward"
+
+[[param]]
+name = "zoom"           # outward zoom per step above 1
+min = 0.004
+max = 0.012
+
+[[param]]
+name = "twist"          # rad per step, grows with depth
+min = -0.003
+max = 0.003
+
+[[param]]
+name = "wander"         # vanishing point drift
+min = 0.0
+max = 0.35

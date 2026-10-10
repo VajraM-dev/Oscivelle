@@ -1,0 +1,17 @@
+kind = "motion"
+description = "Ink in water: a swirling curl-noise current stretches everything into slow-fading tendrils"
+
+[[param]]
+name = "current_scale"  # size of the swirls (higher = smaller eddies)
+min = 1.2
+max = 2.4
+
+[[param]]
+name = "current_speed"  # centred units per step
+min = 0.005
+max = 0.009
+
+[[param]]
+name = "persistence"    # per-step keep (builds hold ink longer)
+min = 0.95
+max = 0.98

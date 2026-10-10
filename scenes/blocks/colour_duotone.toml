@@ -1,0 +1,11 @@
+kind = "colour"
+description = "Duotone: only two palette colours, split by emitter hue"
+[[param]]
+name = "pair"           # which two of the three bright palette entries
+min = 0.0
+max = 1.0
+fixed = true
+[[param]]
+name = "softness"       # blend width between the two tones
+min = 0.05
+max = 0.4

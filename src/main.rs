@@ -1,5 +1,6 @@
 mod analysis;
 mod director;
+mod genome;
 mod markers;
 mod preview;
 mod render;
@@ -72,6 +73,9 @@ struct Cli {
     /// Scenes folder. Default: scenes/ next to the program, else ./scenes, else the source tree's scenes/.
     #[arg(long)]
     scenes: Option<PathBuf>,
+    /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated).
+    #[arg(long, default_value_t = 0.0)]
+    generated: f32,
 }
 
 fn main() {
@@ -119,7 +123,10 @@ fn run(cli: Cli) -> Result<()> {
             .find(|p| p.is_dir())
             .unwrap_or_else(|| "scenes".into())
     });
-    let scenes = scenes::load_all(&scenes_dir)?;
+    let mut scenes = scenes::load_all(&scenes_dir)?;
+    if !(0.0..=1.0).contains(&cli.generated) {
+        bail!("--generated must be between 0 and 1");
+    }
 
     let analysis = load_or_analyse(&audio, cli.reanalyse)?;
 
@@ -144,7 +151,14 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.seed == cli.seed && p.mode == mode);
+        && previous.as_ref().is_some_and(|p| p.seed == cli.seed && p.mode == mode && p.generated == cli.generated);
+    // Blocks only when something is (or was) generated.
+    let gen_dir = sibling(&audio, "gen");
+    let blocks = if cli.generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
+        Some(genome::Blocks::load(&scenes_dir.join("blocks"))?)
+    } else {
+        None
+    };
     let plan = match previous {
         Some(p) if reuse => {
             eprintln!("using saved plan {}", plan_path.display());
@@ -157,6 +171,7 @@ fn run(cli: Cli) -> Result<()> {
                     p.segments.retain(|s| s.locked);
                 }
             }
+            let random_genome = |_, _, r| Some(genome::random(blocks.as_ref()?, r));
             let plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
@@ -166,6 +181,10 @@ fn run(cli: Cli) -> Result<()> {
                 previous: previous.as_ref(),
                 reroll: &cli.reroll,
                 force_scene: cli.scene.as_deref(),
+                generated: cli.generated,
+                genome_for: Some(&random_genome),
+                blocks: blocks.as_ref(),
+                gen_dir: &gen_dir,
             })?;
             // The dev --scene plan is throwaway; don't overwrite the real one.
             if cli.scene.is_none() {
@@ -175,6 +194,14 @@ fn run(cli: Cli) -> Result<()> {
             plan
         }
     };
+
+    // Generated scenes become ordinary scenes: write each genome's .wgsl once.
+    for g in plan.segments.iter().filter_map(|s| s.genome.as_ref()) {
+        if !scenes.iter().any(|s| s.id == g.id()) {
+            let blocks = blocks.as_ref().ok_or_else(|| anyhow!("plan has generated scenes but no blocks were loaded"))?;
+            scenes.push(genome::write(g, blocks, &gen_dir)?);
+        }
+    }
 
     if let Some(text) = director::chapters(&plan) {
         let p = sibling(&audio, "chapters.txt");

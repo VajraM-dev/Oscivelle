@@ -1,0 +1,11 @@
+kind = "colour"
+description = "Iridescent sheen: hue slides through the palette as intensity rises"
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true
+[[param]]
+name = "sheen"          # palette shift per unit intensity
+min = 0.2
+max = 0.6

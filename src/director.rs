@@ -1,4 +1,5 @@
 //! OWNER: director agent. Contract signatures below must stay.
+use crate::genome::{self, Blocks, Genome};
 use crate::markers::Marker;
 use crate::scenes::Scene;
 use crate::types::*;
@@ -16,6 +17,13 @@ pub struct PlanRequest<'a> {
     pub reroll: &'a [usize],
     /// Dev tool: force this scene id on every segment, in any mode.
     pub force_scene: Option<&'a str>,
+    /// Fraction (0..1) of auto-picked segments that get a generated scene.
+    pub generated: f32,
+    /// Supplies a genome for a generated segment: (start, end, seed) -> genome, None = fall back to curated.
+    pub genome_for: Option<&'a dyn Fn(f64, f64, u64) -> Option<Genome>>,
+    pub blocks: Option<&'a Blocks>,
+    /// Where generated scenes' .wgsl files live.
+    pub gen_dir: &'a std::path::Path,
 }
 
 // ---------------------------------------------------------------- rng
@@ -167,26 +175,38 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         .iter()
         .map(|b| req.previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
         .collect();
-    let same_plan = req.previous.is_some_and(|p| p.seed == req.seed && p.mode == req.mode);
+    let same_plan = req.previous.is_some_and(|p| p.seed == req.seed && p.mode == req.mode && p.generated == req.generated);
     let locked = |i: usize| prev[i].filter(|s| s.locked);
     let kept = |i: usize| prev[i].filter(|_| same_plan);
     // Source name mixed in so different files get different takes at the same seed.
     let base_seed = |i: usize| kept(i).map_or_else(|| hash(req.seed ^ fnv1a(a.source.as_bytes()), i as u64), |s| s.seed);
 
-    // Pass 1: every segment as if nothing were re-rolled.
+    // A generated scene from genome_for, if this segment rolls one (needs blocks to build it).
+    let generate = |i: usize| {
+        let f = req.genome_for.filter(|_| req.blocks.is_some())?;
+        let roll = (hash(base_seed(i), 5) >> 11) as f64 / (1u64 << 53) as f64;
+        if roll < req.generated as f64 { f(bounds[i].start, ends[i], hash(base_seed(i), 6)) } else { None }
+    };
+
+    // Pass 1: every segment as if nothing were re-rolled. `genomes` runs parallel to `scenes`.
     let mut scenes: Vec<String> = Vec::with_capacity(n);
+    let mut genomes: Vec<Option<Genome>> = Vec::with_capacity(n);
     for i in 0..n {
-        let id = match (locked(i).or(kept(i)), &bounds[i].scene) {
-            (Some(s), _) if s.locked => s.scene.clone(),
-            (_, Some(forced)) => forced.clone(),
-            (Some(s), None) => s.scene.clone(),
-            (None, None) => {
-                let recent: Vec<&str> = scenes.iter().rev().take(3).map(|s| s.as_str()).collect();
-                let hard: Vec<&str> = scenes.last().map(|s| s.as_str()).into_iter().collect();
-                pick(req.scenes, &recent, &hard, hash(base_seed(i), 1))
-            }
+        let (id, g) = match (locked(i).or(kept(i)), &bounds[i].scene) {
+            (Some(s), _) if s.locked => (s.scene.clone(), s.genome.clone()),
+            (_, Some(forced)) => (forced.clone(), None),
+            (Some(s), None) => (s.scene.clone(), s.genome.clone()),
+            (None, None) => match generate(i) {
+                Some(g) => (g.id(), Some(g)),
+                None => {
+                    let recent: Vec<&str> = scenes.iter().rev().take(3).map(|s| s.as_str()).collect();
+                    let hard: Vec<&str> = scenes.last().map(|s| s.as_str()).into_iter().collect();
+                    (pick(req.scenes, &recent, &hard, hash(base_seed(i), 1)), None)
+                }
+            },
         };
         scenes.push(id);
+        genomes.push(g);
     }
 
     let mut segments = Vec::with_capacity(n);
@@ -194,35 +214,52 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         if let Some(s) = locked(i) {
             let scene = req.force_scene.map_or_else(|| s.scene.clone(), str::to_string);
             // Saved mods index the saved scene's params; a forced scene gets its own.
-            let mods = match req.force_scene.filter(|&f| f != s.scene) {
-                Some(f) => req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed)),
-                None => s.mods.clone(),
+            // A forced scene also drops the genome (force always wins).
+            let (mods, genome) = match req.force_scene.filter(|&f| f != s.scene) {
+                Some(f) => (req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed)), None),
+                None => (s.mods.clone(), s.genome.clone()),
             };
-            segments.push(Segment { end: ends[i], scene, mods, ..s.clone() });
+            segments.push(Segment { end: ends[i], scene, mods, genome, ..s.clone() });
             continue;
         }
         let rerolls = req.reroll.iter().filter(|&&r| r == i).count() as u64;
         // Unlocked segments regenerate from their kept seed (base_seed), so earlier re-rolls stick
         // while titles/transitions follow the current markers and analysis.
         let seed = if rerolls > 0 { hash(base_seed(i), 0xDEAD + rerolls) } else { base_seed(i) };
-        // Pass 2: a re-rolled segment picks a new scene that fits its fixed neighbours.
+        // Pass 2: a re-rolled generated segment gets a new genome (curated if genome_for gives none);
+        // a re-rolled curated one picks a new scene that fits its fixed neighbours.
         let scene = if rerolls > 0 && b.scene.is_none() {
-            let neighbours: Vec<&str> = [i.checked_sub(1), Some(i + 1)]
-                .into_iter()
-                .flatten()
-                .filter_map(|j| scenes.get(j).map(|s| s.as_str()))
-                .collect();
-            let mut avoid: Vec<&str> = scenes[i.saturating_sub(3)..i].iter().map(|s| s.as_str()).collect();
-            avoid.extend(&neighbours);
-            avoid.push(&scenes[i]);
-            let picked = pick(req.scenes, &avoid, &neighbours, hash(seed, 1));
+            let regen = genomes[i].as_ref().and(req.genome_for).and_then(|f| f(b.start, ends[i], hash(seed, 6)));
+            let picked = match &regen {
+                Some(g) => g.id(),
+                None => {
+                    let neighbours: Vec<&str> = [i.checked_sub(1), Some(i + 1)]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|j| scenes.get(j).map(|s| s.as_str()))
+                        .collect();
+                    let mut avoid: Vec<&str> = scenes[i.saturating_sub(3)..i].iter().map(|s| s.as_str()).collect();
+                    avoid.extend(&neighbours);
+                    avoid.push(&scenes[i]);
+                    pick(req.scenes, &avoid, &neighbours, hash(seed, 1))
+                }
+            };
             // Later re-rolled neighbours must see this choice, not the old one.
             scenes[i] = picked.clone();
+            genomes[i] = regen;
             picked
         } else {
             scenes[i].clone()
         };
-        let sc = req.scenes.iter().find(|s| s.id == scene).unwrap_or(&req.scenes[0]);
+        let genome = genomes[i].clone();
+        let owned;
+        let sc = match (&genome, req.blocks) {
+            (Some(g), Some(blocks)) => {
+                owned = genome::to_scene(g, blocks, req.gen_dir)?;
+                &owned
+            }
+            _ => req.scenes.iter().find(|s| s.id == scene).unwrap_or(&req.scenes[0]),
+        };
         let single = req.mode == Mode::Single;
         segments.push(Segment {
             start: b.start,
@@ -235,6 +272,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             title: b.title.clone().or_else(|| kept(i).and_then(|s| s.title.clone())),
             transition_in: if i == 0 { CUT } else { b.transition },
             mods: mods(sc, seed),
+            genome,
         });
     }
     // A morph window (centred on the start) may not exceed either neighbouring segment, so windows never overlap.
@@ -245,7 +283,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, segments })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, segments })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
@@ -517,6 +555,7 @@ pub fn chapters(plan: &Plan) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn test_analysis() -> Analysis {
         let beats: Vec<f64> = (0..1200).map(|i| i as f64 * 0.5).collect();
@@ -570,6 +609,10 @@ mod tests {
             previous: None,
             reroll,
             force_scene: None,
+            generated: 0.0,
+            genome_for: None,
+            blocks: None,
+            gen_dir: Path::new("."),
         };
         let p1 = plan(&req(&[])).unwrap();
         let p2 = plan(&req(&[])).unwrap();
@@ -621,7 +664,7 @@ mod tests {
                 crate::scenes::ParamRange { min: 2.0, max: 4.0, fixed: false },
             ];
         }
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, genome_for: None, blocks: None, gen_dir: Path::new(".") };
         let p = plan(&req).unwrap();
         assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
         let mut flat = p.clone();
@@ -635,5 +678,51 @@ mod tests {
             moved |= f.a.p0[1] != frame_state(&flat, &a, &scenes, t, 64, 64, Quality::Draft).a.p0[1];
         }
         assert!(moved);
+    }
+
+    #[test]
+    fn generated_segments_carry_their_genome() {
+        let a = test_analysis();
+        let scenes = test_scenes();
+        let block = |id: &str| crate::genome::Block {
+            id: id.into(),
+            description: String::new(),
+            params: vec![crate::scenes::ParamRange { min: 0.0, max: 1.0, fixed: false }],
+            wgsl: String::new(),
+        };
+        let blocks = Blocks {
+            motion: vec![block("m0"), block("m1")],
+            emitter: vec![block("e0"), block("e1")],
+            colour: vec![block("c0")],
+            palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
+        };
+        let gen = |_, _, r| Some(genome::random(&blocks, r));
+        let req = |reroll: &'static [usize]| PlanRequest {
+            analysis: &a,
+            scenes: &scenes,
+            mode: Mode::Auto,
+            markers: &[],
+            seed: 7,
+            previous: None,
+            reroll,
+            force_scene: None,
+            generated: 1.0,
+            genome_for: Some(&gen),
+            blocks: Some(&blocks),
+            gen_dir: Path::new("."),
+        };
+        let p = plan(&req(&[])).unwrap();
+        for s in &p.segments {
+            let g = s.genome.as_ref().expect("all generated");
+            assert_eq!(s.scene, g.id());
+            // Mods never land on padding slots (motion 1..3, emitter 4..6, colour 7).
+            assert!(s.mods.iter().all(|m| [0, 3, 6].contains(&m.param)), "{:?}", s.mods);
+        }
+        let p2 = plan(&req(&[1])).unwrap();
+        assert_eq!(p2.segments[1].scene, p2.segments[1].genome.as_ref().unwrap().id());
+        assert_eq!(p2.segments[0].scene, p.segments[0].scene);
+        // A forced scene wins over generation.
+        let p3 = plan(&PlanRequest { force_scene: Some("s1"), ..req(&[]) }).unwrap();
+        assert!(p3.segments.iter().all(|s| s.genome.is_none() && s.scene == "s1"));
     }
 }

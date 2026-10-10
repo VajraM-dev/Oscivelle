@@ -1,0 +1,17 @@
+kind = "motion"
+description = "Liquid plasma flow: trails swirl along a drifting noise field, kick punches a zoom"
+
+[[param]]
+name = "scale"          # swirl size (higher = smaller eddies)
+min = 1.0
+max = 2.2
+
+[[param]]
+name = "flow"           # displacement, uv per step
+min = 0.006
+max = 0.02
+
+[[param]]
+name = "fade"           # per-step trail keep
+min = 0.86
+max = 0.94

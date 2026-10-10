@@ -138,6 +138,9 @@ pub struct Plan {
     pub source: String,
     pub seed: u64,
     pub mode: Mode,
+    /// Share of generated scenes the plan was made with (--generated).
+    #[serde(default)]
+    pub generated: f32,
     /// Scene changes (one per track/marker); contiguous, first starts at 0, last ends at duration.
     pub segments: Vec<Segment>,
 }
@@ -162,6 +165,9 @@ pub struct Segment {
     /// Audio routings for this segment: param += depth * (param range) * source, on top of the variations.
     #[serde(default)]
     pub mods: Vec<Mod>,
+    /// Set when the scene is generated: `scene` is then `genome.id()` and its .wgsl is rebuilt from this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genome: Option<crate::genome::Genome>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]

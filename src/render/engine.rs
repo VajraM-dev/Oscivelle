@@ -478,5 +478,23 @@ mod tests {
         for s in &real {
             e.compile(&s.id).unwrap();
         }
+
+        // Every motion x emitter x colour block combination compiles.
+        let blocks = crate::genome::Blocks::load(&dir.join("blocks")).unwrap();
+        let gen_dir = std::env::temp_dir().join("visualiser_gen_test");
+        let (mut gen, mut names) = (Vec::new(), Vec::new());
+        for m in &blocks.motion {
+            for em in &blocks.emitter {
+                for c in &blocks.colour {
+                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: blocks.palettes[0].clone() };
+                    gen.push(crate::genome::write(&g, &blocks, &gen_dir).unwrap());
+                    names.push(format!("{} + {} + {}", m.id, em.id, c.id));
+                }
+            }
+        }
+        let mut e = Engine::new(&device, &queue, &gen, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm);
+        for (s, name) in gen.iter().zip(&names) {
+            e.compile(&s.id).unwrap_or_else(|err| panic!("{name}: {err:#}"));
+        }
     }
 }

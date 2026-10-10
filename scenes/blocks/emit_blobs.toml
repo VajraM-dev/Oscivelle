@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Soft combed ink blobs bloom on each kick, two wandering nozzles stream between"
+[[param]]
+name = "size"         # blob radius
+min = 0.12
+max = 0.3
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true
+[[param]]
+name = "stream"       # nozzle stream strength
+min = 0.0
+max = 0.6

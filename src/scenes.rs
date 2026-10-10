@@ -80,14 +80,7 @@ pub fn load_all(dir: &Path) -> Result<Vec<Scene>> {
         if t.palettes.is_empty() {
             bail!("{id}: needs at least one palette");
         }
-        let palettes = t
-            .palettes
-            .iter()
-            .map(|p| -> Result<[[f32; 3]; 4]> {
-                Ok([hex(&p[0])?, hex(&p[1])?, hex(&p[2])?, hex(&p[3])?])
-            })
-            .collect::<Result<_>>()
-            .with_context(|| format!("{id}: palette"))?;
+        let palettes = t.palettes.iter().map(palette).collect::<Result<_>>().with_context(|| format!("{id}: palette"))?;
         scenes.push(Scene { id, params: t.params, palettes, wgsl_path });
     }
     if scenes.is_empty() {
@@ -95,6 +88,11 @@ pub fn load_all(dir: &Path) -> Result<Vec<Scene>> {
     }
     scenes.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(scenes)
+}
+
+/// sRGB hex palette to linear RGB.
+pub fn palette(p: &[String; 4]) -> Result<[[f32; 3]; 4]> {
+    Ok([hex(&p[0])?, hex(&p[1])?, hex(&p[2])?, hex(&p[3])?])
 }
 
 fn hex(s: &str) -> Result<[f32; 3]> {

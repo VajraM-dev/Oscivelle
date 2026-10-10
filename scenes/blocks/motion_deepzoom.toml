@@ -1,0 +1,17 @@
+kind = "motion"
+description = "Endless dive into a slowly wandering point with roll sway; kicks throw out bursts of echoes"
+
+[[param]]
+name = "zoom"           # inward dive per step above 1
+min = 0.003
+max = 0.01
+
+[[param]]
+name = "roll"           # roll sway amplitude, rad per step
+min = 0.0
+max = 0.003
+
+[[param]]
+name = "wander"         # dive point drift
+min = 0.0
+max = 0.4

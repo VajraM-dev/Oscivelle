@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Kick-born rings: each kick fires a wobbly ring outward from the centre, drops a big one"
+[[param]]
+name = "speed"        # ring growth, units/s
+min = 0.8
+max = 2.5
+[[param]]
+name = "width"
+min = 0.008
+max = 0.035
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true
