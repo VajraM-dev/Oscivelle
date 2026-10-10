@@ -66,12 +66,11 @@ fn post(c: &AiConfig, body: &Value) -> Result<Value> {
         .http_status_as_error(false)
         .build()
         .into();
-    let mut req = agent.post(&url).header("x-api-key", &c.key).header("anthropic-version", "2023-06-01");
-    if c.provider == "bedrock" {
-        // Unverified which one the bedrock-mantle endpoint wants: send both.
-        req = req.header("Authorization", format!("Bearer {}", c.key));
-    }
-    let mut resp = req
+    // Both providers take x-api-key; bedrock-mantle rejects requests that also carry Authorization.
+    let mut resp = agent
+        .post(&url)
+        .header("x-api-key", &c.key)
+        .header("anthropic-version", "2023-06-01")
         .send_json(body)
         .map_err(|e| anyhow!("AI request failed: {e}"))?;
     let status = resp.status().as_u16();
