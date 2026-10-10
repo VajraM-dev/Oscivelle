@@ -1,0 +1,37 @@
+name = "Starfield warp"
+palettes = [
+  ["#01010a", "#4cc9f0", "#b5179e", "#f8f9fa"],
+  ["#020308", "#ff7b00", "#ff006e", "#8ecae6"],
+  ["#000510", "#00f5d4", "#9b5de5", "#f15bb5"],
+  ["#06000a", "#ff4d6d", "#c77dff", "#e0fbfc"],
+]
+
+[[param]]
+name = "warp_speed"     # trail zoom per step above 1 (after-glow length)
+min = 0.002
+max = 0.005
+
+[[param]]
+name = "streak_length"  # base streak length
+min = 0.6
+max = 1.3
+
+[[param]]
+name = "streak_fade"    # per-step fade
+min = 0.78
+max = 0.88
+
+[[param]]
+name = "star_density"   # fraction of cells with a star
+min = 0.45
+max = 0.72
+
+[[param]]
+name = "nebula"         # nebula emission per step
+min = 0.022
+max = 0.045
+
+[[param]]
+name = "nebula_hue"
+min = 0.0
+max = 1.0

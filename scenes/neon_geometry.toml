@@ -1,0 +1,47 @@
+name = "Neon geometry trails"
+palettes = [
+  ["#05010f", "#00f5ff", "#ff00e5", "#fff200"],
+  ["#020812", "#39ff14", "#00b3ff", "#ff2e63"],
+  ["#0d0221", "#ff6b35", "#ff2079", "#2ec4f6"],
+  ["#000000", "#ff0a54", "#ff85a1", "#7af5ff"],
+]
+
+[[param]]
+name = "sides"          # polygon sides (integer)
+min = 3.0
+max = 7.0
+
+[[param]]
+name = "spin"           # trail rotation, rad per step
+min = -0.012
+max = 0.012
+
+[[param]]
+name = "swirl"
+min = -0.015
+max = 0.015
+
+[[param]]
+name = "tunnel_zoom"    # extra feedback zoom per step
+min = 1.0
+max = 1.006
+
+[[param]]
+name = "trail_hue_drift" # turns per step as trails age
+min = -0.003
+max = 0.003
+
+[[param]]
+name = "trail_length"   # per-step fade
+min = 0.7
+max = 0.83
+
+[[param]]
+name = "shape_size"
+min = 0.5
+max = 0.85
+
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0

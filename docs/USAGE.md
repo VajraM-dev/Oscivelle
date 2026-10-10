@@ -1,0 +1,420 @@
+# visualiser: command reference
+
+`visualiser` turns an audio file (a DJ mix or a single production) into an MP4 with music-aware, MilkDrop-style visuals. It listens to the whole file first, plans the visuals around the music's structure, then renders.
+
+- [Quick start](#quick-start)
+- [How a run works](#how-a-run-works)
+- [Options](#options): [input](#input), [mode and markers](#mode-and-markers), [output](#output), [variation](#variation-and-repeatability), [re-use](#re-using-saved-work), [developer](#developer-tools), [hardware](#hardware)
+- [Recipes](#recipes)
+- [Marker files](#marker-files)
+- [Editing the plan file](#editing-the-plan-file)
+- [Files written](#files-written)
+- [Preview window](#preview-window---dev)
+- [Writing scenes](#writing-scenes)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Quick start
+
+**Drag and drop:** drop a WAV, FLAC, MP3 or AIFF file onto `visualiser.exe`. A console window shows progress and time remaining, and `<name>.mp4` appears next to the audio. When it finishes, the window waits for Enter so you can read any messages.
+
+**Command line:**
+
+```
+visualiser.exe <AUDIO> [OPTIONS]
+```
+
+```
+visualiser.exe "D:\Mixes\set.flac"
+```
+
+That runs with all defaults: Auto mode, final quality, 1080p at 30 fps, seed 1, titles and grain on.
+
+`visualiser.exe --help` lists every option. `--version` prints the version.
+
+---
+
+## How a run works
+
+```
+audio ──► Analyse ──► <name>.analysis.json ──► Plan ──► <name>.plan.json ──► Render ──► <name>.mp4
+          (kicks, beats,                        (scenes, palettes,          (GPU, chunked,
+           phrases, drops,                       transitions,                resumable)
+           track changes)                        phrase variations)
+```
+
+1. **Analyse.** Decodes the audio and finds kicks, tempo, beats, downbeats, 8/16/32-bar phrases, band energy, the tension (build-up) curve, drops and track changes. The result is saved and reused next time.
+2. **Plan.** Splits the file into segments (one per track or marker), picks a scene, palette and transition for each, and schedules a variation at each phrase and drop. The result is saved and reused next time. You can edit the plan by hand.
+3. **Render.** Steps the simulation 60 times a second and writes 30 fps video. Work is saved in 5-minute chunks, so an interrupted render picks up where it stopped. At the end the chunks are joined and the original audio is added.
+
+Because each stage is saved, changing markers, the seed or a single segment re-plans without re-analysing. A render that crashed resumes without re-rendering finished chunks.
+
+---
+
+## Options
+
+### Input
+
+| Argument | Description |
+|---|---|
+| `<AUDIO>` | **Required.** WAV, FLAC, MP3 or AIFF, up to about 2 hours. Output files are written next to it. |
+
+### Mode and markers
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--mode <MODE>` | `auto`, `single`, `markers` | `markers` if `--markers` is given, else `auto` | Decides what changes the scene. |
+| `--markers <FILE>` | path | none | A CUE sheet, Audacity label file or plain-text list of times. See [Marker files](#marker-files). |
+
+**Modes:**
+
+| Mode | Scene changes | Variation within a scene | Use it for |
+|---|---|---|---|
+| `auto` | At each detected track change (confidence ≥ 0.35, segments ≥ 30 s) | On 16/32-bar phrases and drops | Mixes, hands-off |
+| `single` | Never | On every 8-bar phrase, plus drops | Single productions, one consistent look |
+| `markers` | At your marker times, snapped to the nearest downbeat (within 1 bar) or phrase start (within 2 bars) | On 16/32-bar phrases and drops | Full control; the reliable route for mixes with a tracklist |
+
+Auto mode detects a track change when the **key or tempo** changes. Breakdowns and drops inside one track don't count. A long, in-key, beatmatched blend can be missed, so use markers for those mixes.
+
+**Transitions** are chosen from the music:
+
+| Situation | Transition |
+|---|---|
+| Hard cut | Cut |
+| Hard cut on a drop | White flash |
+| Long blend | Slow morph between the two scenes, lasting as long as the blend (2–16 s) |
+| Marker with no detected change nearby | 4 s morph, or a flash if it's on a drop |
+
+### Output
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--quality <Q>` | `draft`, `final` | `final` | **final** renders at 1.5× resolution and scales down (clean edges), blends sub-frames for motion blur, and uses full bloom. **draft** renders at output resolution with no motion blur and lighter bloom. Both animate identically. |
+| `--resolution <H>` | `720`, `1080`, `1440` | `1080` (`720` with draft) | Output height. Width is 16:9: 1280, 1920 or 2560. |
+| `--preview <TIME>` | seconds or `mm:ss` / `h:mm:ss` | none | Render only a **30-second window** starting at TIME. It writes `<name>.preview-<start>s.mp4` and leaves the full video alone. The simulation warms up before the window, so it looks exactly like the same stretch of a full render. |
+| `--no-titles` | flag | titles on | Turns off the lower-third "Artist - Title" caption that fades in for a few seconds at each track change. Titles only appear when the marker or CUE file supplies names. |
+| `--no-grain` | flag | grain on | Turns off film grain. Fine, fast-changing grain is hard to compress, so A/B it after a test upload. |
+
+**Encode settings** (fixed, following YouTube's recommendations):
+
+- Video: H.264 High, closed GOP of 15 frames, yuv420p, BT.709 tags. About 8 Mbps at 720p/1080p, or 16 Mbps at 1440p.
+- Audio: AAC-LC, 48 kHz, 384 kbps, re-encoded from the source. The source file is never modified.
+
+### Variation and repeatability
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--seed <N>` | integer | `1` | Fixes every random choice. Same file + same settings + same seed = the same video. A new seed gives a different take. Different files get different takes even with the same seed. |
+| `--reroll <INDEX>` | segment index (0-based, as in `plan.json`) | none | Gives one segment a new take: scene, palette and variations. Every other segment stays the same. Repeat it for several segments: `--reroll 2 --reroll 5`. Re-rolling the same segment again gives yet another take. |
+
+To keep a segment you like, set `"locked": true` on it in the plan file. See [Editing the plan file](#editing-the-plan-file).
+
+### Re-using saved work
+
+| Option | Description |
+|---|---|
+| `--reanalyse` | Ignores the saved `<name>.analysis.json` and analyses again. Also re-plans. Use it after updating the program or when the audio file changed. |
+| `--replan` | Ignores the saved plan's **unlocked** segments and plans again from the analysis. Locked segments are kept. |
+| `--plan-only` | Stops after writing the analysis, plan and chapters. Doesn't render. Use it to inspect or edit the plan first. |
+
+**When is the saved plan reused?** When all of these are true: the seed and mode match the saved plan, and none of `--markers`, `--reroll`, `--replan`, `--reanalyse` or `--scene` are given. Otherwise a new plan is made. Locked segments always carry over.
+
+### Developer tools
+
+| Option | Values | Description |
+|---|---|---|
+| `--dev` | flag | Opens the live [preview window](#preview-window---dev) instead of rendering. The audio plays and the visuals render in real time. Scene shaders reload when you save them. |
+| `--start <TIME>` | seconds or `mm:ss` | With `--dev`: where playback starts. |
+| `--scene <ID>` | scene id (file name without extension) | Forces **one scene for the whole file**, to audition it. Works with `--dev` and with renders (`--preview` gives `<name>.preview-<id>.<start>s.mp4`). The saved plan is **not** overwritten. |
+| `--debug` | flag | Also writes `<name>.click.wav` (the audio at −6 dB with a click on every kick and a higher click on every downbeat) and `<name>.debug.mp4` (a 720p draft render with an analysis overlay). Use them to check the analysis by ear and by eye. |
+| `--scenes <DIR>` | folder | Loads scenes from another folder. Default: `scenes\` next to the program, else `.\scenes`, else the source tree's `scenes\`. |
+
+**Debug overlay** (in `.debug.mp4` and the `D` key in `--dev`): bars for kick, energy, tension, bass, phrase position and drop, boxes for the beat within the bar, and a beat-phase line.
+
+### Hardware
+
+| Option | Description |
+|---|---|
+| `--cpu` | Forces the software renderer (WARP on Windows). Use it to benchmark or test a no-GPU machine. |
+
+The renderer picks a dedicated GPU, then integrated graphics, then the software renderer automatically. The adapter in use is printed at start-up (for example `GPU: NVIDIA GeForce RTX 3060 Laptop GPU (Vulkan)`).
+
+Measured speeds (RTX 3060 laptop):
+
+| Setting | Speed | One hour of audio |
+|---|---|---|
+| GPU, final 1080p | 48–63 fps | about 30–40 min |
+| GPU, draft 720p | about 98 fps | about 20 min |
+| Software (WARP), draft 720p | about 3.3 fps | about 9 h |
+
+---
+
+## Recipes
+
+**Hands-off mix:**
+```
+visualiser.exe set.flac
+```
+
+**Mix with a tracklist (recommended for mixes):** scene changes land on your track times and titles come from the CUE.
+```
+visualiser.exe set.flac --markers set.cue
+```
+
+**Single production, one consistent look:**
+```
+visualiser.exe track.wav --mode single
+```
+
+**Quick check before a long render:** check the drop at 12:30, or check the whole thing at low quality.
+```
+visualiser.exe set.flac --preview 12:30
+visualiser.exe set.flac --quality draft
+```
+
+**Try another take:** one segment, or the whole file.
+```
+visualiser.exe set.flac --reroll 4
+visualiser.exe set.flac --seed 7
+```
+
+**Lock what you like, then re-roll the rest:**
+1. `visualiser.exe set.flac --plan-only`
+2. In `set.plan.json`, set `"locked": true` on the segments you like.
+3. `visualiser.exe set.flac --seed 8`. Locked segments stay, everything else changes.
+
+**Best quality for YouTube:**
+```
+visualiser.exe track.wav --resolution 1440
+```
+
+**Check the analysis:** listen to `track.click.wav` and watch `track.debug.mp4`.
+```
+visualiser.exe track.wav --debug --preview 1:00
+```
+
+**Tune a scene live:**
+```
+visualiser.exe track.wav --dev --scene ink_in_water --start 1:05
+```
+Then edit `scenes\ink_in_water.wgsl` and save. The window reloads it.
+
+**Benchmark a no-GPU machine:**
+```
+visualiser.exe track.wav --cpu --quality draft --preview 0
+```
+
+**Resume after a crash or shutdown:** run the same command again. Finished 5-minute chunks are skipped.
+
+---
+
+## Marker files
+
+The format is detected from the content. Every format supports `@scene_id` anywhere in a name to force that scene for the segment, for example `@ink_in_water`. The tag is removed from the displayed title. Unknown scene ids are ignored with a warning.
+
+A marker at or near 0:00 names the opening segment. Markers within 1 s of the previous one, or within 1 s of the end, are dropped.
+
+Files may be UTF-8 (with or without a BOM) or Latin-1.
+
+### CUE sheet
+
+Detected by `TRACK` lines. Titles are `PERFORMER - TITLE` (the track's performer, else the file-level one).
+
+```
+PERFORMER "Various"
+FILE "set.wav" WAVE
+  TRACK 01 AUDIO
+    PERFORMER "Artist A"
+    TITLE "Opener"
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    PERFORMER "Artist B"
+    TITLE "Second One @kaleidoscope_bloom"
+    INDEX 01 04:31:37
+```
+
+`INDEX 01 mm:ss:ff` uses CUE frames, 75 per second.
+
+### Audacity label file
+
+From Audacity: *File → Export → Export Labels*. Each line is `start<TAB>end<TAB>label`, in seconds.
+
+```
+0.000000	0.000000	Artist A - Opener
+271.493000	271.493000	Artist B - Second One
+```
+
+### Plain text
+
+One marker per line: a time, then an optional name. Lines starting with `#` are comments.
+
+```
+# my tracklist
+0:00      Artist A - Opener
+4:31      Artist B - Second One
+[9:02]    Artist C - Third @plasma_field
+1:02:15.5 Artist D - Closer
+754.2
+```
+
+Accepted times are `h:mm:ss`, `mm:ss`, `m:ss.s` or plain seconds (`754.2`), optionally in `[ ]`.
+
+---
+
+## Editing the plan file
+
+`<name>.plan.json` is plain JSON and is meant to be read and edited. After editing, run the same command again (same seed and mode, no `--replan`) and it is used as written.
+
+```jsonc
+{
+  "version": 1,
+  "source": "set.flac",
+  "seed": 1,
+  "mode": "Markers",
+  "segments": [
+    {
+      "start": 0.0, "end": 271.49,       // seconds; segments are contiguous
+      "scene": "liquid_tunnel",          // any id from scenes\
+      "seed": 1234567890,                // per-segment seed (changed by --reroll)
+      "locked": false,                   // true = kept through --replan, re-seeds and re-rolls
+      "palette": 2,                      // index into the scene's palettes
+      "title": "Artist A - Opener",       // caption text, or null for none
+      "transition_in": { "kind": "Cut", "duration": 0.0 },   // Cut | Flash | Morph (duration s)
+      "variations": [                    // phrase-level changes inside the segment
+        { "time": 0.0, "params": [0.004, 0.12], "hue_shift": 0.0 }
+      ]
+    }
+  ]
+}
+```
+
+What you can change safely:
+
+- **scene**: swap in any scene id.
+- **palette**: pick another palette of that scene, `0` to (number of palettes − 1).
+- **title**: change or remove the caption.
+- **transition_in**: for example, change a `Morph` to a `Flash`.
+- **locked**: protect a segment.
+- **variations[].params**: stay inside the ranges in the scene's `.toml`.
+- **variations[].hue_shift**: in turns, 0..1.
+
+Leave `start` and `end` contiguous. To move a boundary, prefer a marker file.
+
+A change to the plan, the settings, the analysis or a used scene's shader automatically invalidates old render chunks.
+
+---
+
+## Files written
+
+Everything is written next to the source audio:
+
+| File | When | What |
+|---|---|---|
+| `<name>.mp4` | full render | The video. |
+| `<name>.preview-<start>s.mp4` | `--preview` | The 30-second preview (with `-<scene>.` in the name when `--scene` is used). |
+| `<name>.analysis.json` | always | Saved analysis, reused next run. |
+| `<name>.plan.json` | always (except with `--scene`) | Saved plan, editable. |
+| `<name>.chapters.txt` | at least 3 sections, each at least 10 s | YouTube chapters (`00:00 Title` lines), first at 00:00, ready to paste into the description. |
+| `<name>.click.wav` | `--debug` | Click track. |
+| `<name>.debug.mp4` | `--debug` | Analysis overlay video. |
+| `<name>.parts\` | during a render | Finished chunks. Deleted after a successful render. Safe to delete by hand to force a clean render. |
+
+---
+
+## Preview window (`--dev`)
+
+A 1280×720 window that plays the audio and renders live. The title bar shows the current time and the scene (and the incoming scene during a morph).
+
+| Key | Action |
+|---|---|
+| `Space` | Pause / resume (audio and visuals) |
+| `R` | Restart from `--start` |
+| `D` | Toggle the debug overlay |
+| `Esc` | Quit |
+
+**Hot reload:** saving any `scenes\*.wgsl` file, or `scenes\_prelude.wgsl`, recompiles it within half a second. If the shader has an error, the error is printed to the console and the last working version keeps running.
+
+Notes:
+
+- Bloom, aberration, vignette and grain amounts are compiled into the program (`src\render\finish.wgsl`), so changing them needs a rebuild.
+- The preview can't play AIFF. Rendering AIFF works.
+- Resizing the window restarts the trails.
+
+---
+
+## Writing scenes
+
+A scene is two files in `scenes\` with the same name: `<id>.wgsl` and `<id>.toml`. Scenes are loaded at start-up, so a new scene needs no recompile.
+
+**`<id>.toml`:**
+
+```toml
+name = "Liquid tunnel"          # label only
+palettes = [                    # 1+ palettes, exactly 4 sRGB hex colours each
+  ["#05010f", "#3a0ca3", "#f72585", "#4cc9f0"],
+]
+
+[[param]]                       # up to 8; order = P(0)..P(7) in the shader
+name = "trail_drift"            # label only
+min = 0.0                       # the director picks values inside [min, max]
+max = 0.01                      # and morphs between them on phrases. Keep both ends good-looking.
+```
+
+**`<id>.wgsl`:** define exactly one entry point:
+
+```wgsl
+fn scene(uv: vec2<f32>) -> vec4<f32> {
+    // uv: 0..1, (0,0) = top-left. Return the NEW feedback colour (linear HDR; alpha ignored).
+    let back = prev(warp(uv, 1.01, 0.002, 0.0, vec2<f32>(0.0))) * 0.96;   // warp + fade previous frame
+    let p = to_centered(uv);
+    let ring = line_glow(p, vec2<f32>(-0.5, 0.0), vec2<f32>(0.5, 0.0), 0.01 + 0.02 * kick());
+    return vec4<f32>(back + pal(time() * 0.05) * ring, 1.0);
+}
+```
+
+It runs 60 times a second on an HDR feedback buffer. The finish pass does tonemapping, bloom, aberration, vignette, grain and dithering, so don't do those in the scene.
+
+**Available from `_prelude.wgsl`:**
+
+| Group | Functions |
+|---|---|
+| Time | `time()`, `dt()`, `resolution()`, `aspect()`, `quality()` (0 draft / 1 final), `seed()` (0..1 per segment) |
+| Beat | `kick()` (decaying kick envelope 0..1), `since_kick()` (s), `beat_phase()`, `bar_phase()`, `phrase_phase()` (0..1) |
+| Bands | `sub()`, `bass()`, `mid()`, `high()` (0..1, levelled per track) |
+| Shape | `energy()`, `tension()` (rises across a build, 0 at the drop), `drop_env()` (1 at a drop, decays), `since_drop()` (s) |
+| Params | `P(i)`: the scene's params 0..7 |
+| Feedback | `prev(uv)`, `warp(uv, zoom, angle, swirl, center)` |
+| Geometry | `to_centered(uv)`, `to_uv(p)`, `rot2(a)`, `line_glow(p, a, b, width)` |
+| Colour | `pal(t)` (cyclic 4-colour palette with the phrase hue shift), `hue_rotate(c, turns)` |
+| Noise | `hash21(p)`, `noise2(p)`, `fbm(p)` |
+
+**House rules** (these are why the visuals don't look like noise):
+
+- The kick is the main driver. Link at most 2–3 things to audio, and use `high()`/`mid()` sparingly.
+- Use `tension()` for anticipation (push in, tighten, calm the colour) and `drop_env()` for the release.
+- Low `energy()` (breakdowns) means calmer motion.
+- Balance fade against emission so trails never wash to a flat fill or die to black.
+- Don't multiply `time()` by a param. Params morph, so the phase would jump. Apply speeds per step (`* dt()`) instead.
+
+Audition with `--dev --scene <id>`, or render `--scene <id> --preview <time>` and look at frames.
+
+**Included scenes:** `liquid_tunnel`, `kaleidoscope_bloom`, `fractal_zoom`, `ink_in_water`, `neon_geometry`, `plasma_field`, `starfield_warp`.
+
+---
+
+## Troubleshooting
+
+| Message / symptom | Fix |
+|---|---|
+| `scenes folder ...: cannot find the path` | Run from the folder containing `scenes\`, keep `scenes\` next to the exe, or pass `--scenes <DIR>`. |
+| `ffmpeg` not found / mux failed | Put `ffmpeg.exe` next to `visualiser.exe` or on `PATH`. |
+| `markers mode needs --markers <file>` | `--mode markers` was given without a marker file. |
+| `unknown scene X` | Check the id against the file names in `scenes\` (no extension). |
+| `--preview start ... is at or past the end` | Pick an earlier start. The window is 30 s, cut short at the end of the file. |
+| `resolution must be 720, 1080 or 1440` | Only these heights are supported. |
+| Edited the plan but nothing changed | Run with the same `--seed` and `--mode`, and without `--replan`, `--reroll` or `--markers`. Otherwise the plan is regenerated (only locked segments survive). |
+| Scene changes in the wrong places in a mix | Use a marker file (CUE from your DJ software, or a text list). Auto detection misses in-key blends. |
+| Analysis looks wrong after an update | `--reanalyse`. |
+| Render is very slow | Check the adapter line at start-up. `Microsoft Basic Render Driver` / WARP means no GPU, so use `--quality draft`. |
+| Want a clean re-render | Delete `<name>.parts\` (and `<name>.plan.json` for a fresh plan). |

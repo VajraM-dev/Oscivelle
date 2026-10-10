@@ -1,0 +1,9 @@
+/target
+/dist
+/ffmpeg
+/.claude
+# Test audio is the user's own music: keep it local. Generated outputs too.
+/testdata/*
+!/testdata/make_mix.py
+!/testdata/mix.cue
+*.parts/

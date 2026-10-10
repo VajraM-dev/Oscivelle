@@ -1,0 +1,48 @@
+name = "Fractal zoom"
+palettes = [
+  ["#05010f", "#3a0ca3", "#f72585", "#4cc9f0"],
+  ["#020812", "#0077b6", "#00f5d4", "#ffd166"],
+  ["#03071e", "#6a040f", "#e85d04", "#faa307"],
+  ["#10002b", "#7b2cbf", "#ff6d00", "#ffd60a"],
+  ["#000814", "#c1121f", "#ff9e00", "#3a86ff"],
+]
+
+[[param]]
+name = "zoom_depth"     # how far the breathing dive goes toward max depth (0..1)
+min = 0.55
+max = 1.0
+
+[[param]]
+name = "roll"           # camera roll sway amplitude, rad
+min = 0.0
+max = 0.5
+
+[[param]]
+name = "band_density"   # palette turns per iteration
+min = 0.02
+max = 0.06
+
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+
+[[param]]
+name = "filaments"      # stripe-average hair detail
+min = 0.3
+max = 0.9
+
+[[param]]
+name = "echo_keep"      # per-step fade of the echo layer
+min = 0.72
+max = 0.84
+
+[[param]]
+name = "echo_zoom"      # echo push per step
+min = 1.001
+max = 1.004
+
+[[param]]
+name = "edge_glow"      # boundary glow exponent (lower = wider glow)
+min = 0.8
+max = 1.6

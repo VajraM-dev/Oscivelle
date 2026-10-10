@@ -1,0 +1,43 @@
+name = "Plasma field"
+palettes = [
+  ["#03001e", "#7303c0", "#ec38bc", "#fdeff9"],
+  ["#001510", "#00bf8f", "#a8ff78", "#1a2a6c"],
+  ["#140000", "#d00000", "#ffba08", "#3f88c5"],
+  ["#000814", "#4361ee", "#4cc9f0", "#f72585"],
+  ["#0f0a00", "#e85d04", "#faa307", "#03045e"],
+]
+
+[[param]]
+name = "scale"          # field zoom (higher = finer structure)
+min = 1.3
+max = 2.2
+
+[[param]]
+name = "warp_amount"    # domain-warp strength
+min = 1.2
+max = 2.6
+
+[[param]]
+name = "colour_spread"  # palette turns across the field
+min = 0.6
+max = 1.6
+
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+
+[[param]]
+name = "filament_density"
+min = 4.0
+max = 8.0
+
+[[param]]
+name = "flow"           # feedback displacement, uv per step
+min = 0.002
+max = 0.007
+
+[[param]]
+name = "refresh"        # weight of the fresh field per step
+min = 0.06
+max = 0.16

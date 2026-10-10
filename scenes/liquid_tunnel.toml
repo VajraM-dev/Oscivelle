@@ -1,0 +1,47 @@
+name = "Liquid tunnel"
+palettes = [
+  ["#05010f", "#7b2ff7", "#ff2e88", "#16e0ff"],
+  ["#010b10", "#00b4a0", "#ffd166", "#ff5e3a"],
+  ["#0d0105", "#d00000", "#ffba08", "#3a86ff"],
+  ["#02040f", "#3a0ca3", "#4cc9f0", "#f15bb5"],
+]
+
+[[param]]
+name = "trail_drift"    # extra zoom per step beyond the wall flow
+min = 0.0
+max = 0.003
+
+[[param]]
+name = "rotation"       # rad per step
+min = -0.0015
+max = 0.0015
+
+[[param]]
+name = "swirl"          # rad per unit radius per step
+min = -0.0025
+max = 0.0025
+
+[[param]]
+name = "ripple"         # liquid wall displacement
+min = 0.0008
+max = 0.003
+
+[[param]]
+name = "lobes"          # ring angular lobes (integer)
+min = 4.0
+max = 8.0
+
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+
+[[param]]
+name = "ring_width"
+min = 0.012
+max = 0.03
+
+[[param]]
+name = "wander"         # vanishing point drift
+min = 0.0
+max = 0.35

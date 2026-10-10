@@ -1,0 +1,42 @@
+name = "Kaleidoscope bloom"
+palettes = [
+  ["#0b0221", "#ff006e", "#ffbe0b", "#3a86ff"],
+  ["#061a14", "#2ec4b6", "#ff9f1c", "#e71d36"],
+  ["#14031f", "#9d4edd", "#ffd60a", "#ff5d8f"],
+  ["#020617", "#0077b6", "#90e0ef", "#f9c74f"],
+]
+
+[[param]]
+name = "symmetry"       # mirror segments (integer)
+min = 5.0
+max = 10.0
+
+[[param]]
+name = "trail_drift"    # extra zoom per step beyond the bloom flow
+min = 0.0
+max = 0.003
+
+[[param]]
+name = "spin_drift"     # extra trail rotation, rad per step
+min = -0.003
+max = 0.003
+
+[[param]]
+name = "swirl"          # trail swirl, rad per unit radius per step
+min = -0.004
+max = 0.004
+
+[[param]]
+name = "petal_size"     # petal radius relative to the wedge
+min = 0.8
+max = 1.25
+
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+
+[[param]]
+name = "ring_spacing"   # log-radius spacing between petal rings
+min = 0.35
+max = 0.6

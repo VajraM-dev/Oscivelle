@@ -1,0 +1,47 @@
+name = "Ink in water"
+palettes = [
+  ["#02060f", "#e63946", "#f1faee", "#1d70b8"],
+  ["#050a08", "#2a9d8f", "#e9c46a", "#e76f51"],
+  ["#0a0412", "#c9184a", "#ff8fa3", "#6a4c93"],
+  ["#030b14", "#00b4d8", "#caf0f8", "#fb8500"],
+]
+
+[[param]]
+name = "current_scale"  # size of the swirls (higher = smaller eddies)
+min = 1.2
+max = 2.4
+
+[[param]]
+name = "current_speed"  # centred units per step
+min = 0.005
+max = 0.009
+
+[[param]]
+name = "spread"         # outward zoom per step
+min = 1.0
+max = 1.0015
+
+[[param]]
+name = "drop_hue"       # palette offset for kick drops
+min = 0.0
+max = 0.08
+
+[[param]]
+name = "persistence"    # per-step keep factor
+min = 0.989
+max = 0.994
+
+[[param]]
+name = "drop_size"
+min = 0.1
+max = 0.18
+
+[[param]]
+name = "ribbon"         # nozzle stream opacity per step
+min = 0.06
+max = 0.15
+
+[[param]]
+name = "sharpen"        # per-step unsharp amount (keeps tendrils crisp)
+min = 0.12
+max = 0.25
