@@ -3,6 +3,8 @@
 `visualiser` turns an audio file (a DJ mix or a single production) into an MP4 with music-aware, MilkDrop-style visuals. It listens to the whole file first, plans the visuals around the music's structure, then renders.
 
 - [Quick start](#quick-start)
+- [Guided mode](#guided-mode)
+- [Installer](#installer)
 - [How a run works](#how-a-run-works)
 - [Options](#options): [input](#input), [mode and markers](#mode-and-markers), [output](#output), [variation](#variation-and-repeatability), [re-use](#re-using-saved-work), [developer](#developer-tools), [hardware](#hardware)
 - [Recipes](#recipes)
@@ -16,6 +18,8 @@
 ---
 
 ## Quick start
+
+**Guided mode:** run `visualiser.exe` with no arguments (double-click it, or use the Start Menu entry) and answer a few questions. See [Guided mode](#guided-mode).
 
 **Drag and drop:** drop a WAV, FLAC, MP3 or AIFF file onto `visualiser.exe`. A console window shows progress and time remaining, and `<name>.mp4` appears next to the audio. When it finishes, the window waits for Enter so you can read any messages.
 
@@ -32,6 +36,38 @@ visualiser.exe "D:\Mixes\set.flac"
 That runs with all defaults: Auto mode, final quality, 1080p at 30 fps, seed 1, titles and grain on.
 
 `visualiser.exe --help` lists every option. `--version` prints the version.
+
+---
+
+## Guided mode
+
+Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, full video or a 30-second test, resolution, and optionally seed, titles and film grain. It then prints the equivalent command line, so you can copy it for next time, and renders.
+
+- Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
+- In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
+- `Esc` quits at any question.
+- When stdin isn't a terminal (scripts, redirected input) there are no questions and no pause: no arguments behaves like any other command line.
+
+---
+
+## Installer
+
+`package.ps1` builds the release and writes `dist\visualiser.zip`. If Inno Setup 6 is installed (`winget install JRSoftware.InnoSetup`) it also writes `dist\visualiser-setup-<version>.exe`. Without Inno Setup it skips the installer with a note.
+
+```
+powershell -File package.ps1
+```
+
+Populate `.\ffmpeg\` first (an ffmpeg build plus its licence), as for the zip.
+
+The installer:
+
+- Installs per user, with no admin prompt, to `%LOCALAPPDATA%\Programs\Visualiser`.
+- Adds that folder to your user `PATH` (open a new terminal to use `visualiser` from anywhere) and creates a Start Menu entry.
+- Offers an optional desktop shortcut (you can drop audio files on it) and an optional "Make visuals" right-click entry for `.wav`, `.flac`, `.mp3`, `.aiff` and `.aif` files.
+- Uninstalls cleanly: the `PATH` entry and the right-click menu are removed.
+
+The C runtime is linked statically, so no Visual C++ redistributable is needed. The installer is unsigned: Windows SmartScreen may warn. Choose "More info", then "Run anyway".
 
 ---
 
@@ -283,6 +319,9 @@ Accepted times are `h:mm:ss`, `mm:ss`, `m:ss.s` or plain seconds (`754.2`), opti
       "transition_in": { "kind": "Cut", "duration": 0.0 },   // Cut | Flash | Morph (duration s)
       "variations": [                    // phrase-level changes inside the segment
         { "time": 0.0, "params": [0.004, 0.12], "hue_shift": 0.0 }
+      ],
+      "mods": [                          // audio modulation of params, on top of the variations
+        { "param": 0, "source": "Kick", "depth": 0.3 }
       ]
     }
   ]
@@ -298,6 +337,21 @@ What you can change safely:
 - **locked**: protect a segment.
 - **variations[].params**: stay inside the ranges in the scene's `.toml`.
 - **variations[].hue_shift**: in turns, 0..1.
+- **mods**: see below.
+
+### Audio modulation (`mods`)
+
+Each segment has a list of `mods` that tie scene params to the music. The director picks one or two per segment at plan time, on random params that aren't `fixed`. Each entry has:
+
+| Field | Meaning |
+|---|---|
+| `param` | Which param, as an index in the scene's `.toml` order (`0` = the first `[[param]]`). |
+| `source` | `Kick`, `Bass`, `Mid`, `High`, `Energy`, `Tension` or `Drop`. |
+| `depth` | How far the param moves, as a fraction of its `min`..`max` range at a source value of 1. Negative inverts. |
+
+The movement is added to the param's current value (including its phrase variation) and clamped to the range. `Bass`, `Mid`, `High` and `Energy` are levels centred on their midpoint, so they push the param both ways around its value. `Kick`, `Tension` and `Drop` are envelopes that rest at 0 and only push one way (up for positive depth). Mods on a `fixed` param, or on a param index the scene doesn't have, are ignored. Remove an entry, or set `"mods": []`, to turn modulation off for that segment.
+
+Plans saved by older versions have no `mods` and render without modulation. Run with `--replan` to get them (locked segments keep their old settings).
 
 Leave `start` and `end` contiguous. To move a boundary, prefer a marker file.
 
@@ -359,7 +413,10 @@ palettes = [                    # 1+ palettes, exactly 4 sRGB hex colours each
 name = "trail_drift"            # label only
 min = 0.0                       # the director picks values inside [min, max]
 max = 0.01                      # and morphs between them on phrases. Keep both ends good-looking.
+# fixed = true                  # optional: the director never audio-modulates this param
 ```
+
+Set `fixed = true` on params that would look wrong if they moved with the music: integer params (the shader uses `floor` or `round`), params that multiply `time()` (the phase would jump), and hue offsets. Other params may be modulated by the plan's [`mods`](#audio-modulation-mods).
 
 **`<id>.wgsl`:** define exactly one entry point:
 
@@ -395,6 +452,7 @@ It runs 60 times a second on an HDR feedback buffer. The finish pass does tonema
 - Use `tension()` for anticipation (push in, tighten, calm the colour) and `drop_env()` for the release.
 - Low `energy()` (breakdowns) means calmer motion.
 - Balance fade against emission so trails never wash to a flat fill or die to black.
+- Mark params that must never be audio-modulated with `fixed = true` (see below).
 - Don't multiply `time()` by a param. Params morph, so the phase would jump. Apply speeds per step (`* dt()`) instead.
 
 Audition with `--dev --scene <id>`, or render `--scene <id> --preview <time>` and look at frames.

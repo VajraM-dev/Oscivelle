@@ -6,6 +6,12 @@ Turns a long audio file (DJ mix or production) into an MP4 with music-aware, Mil
 
 **Full command reference: [docs/USAGE.md](docs/USAGE.md)**: every option, marker formats, plan editing, preview keys, writing scenes, troubleshooting.
 
+**Guided mode:** run `visualiser.exe` with no arguments (double-click or Start Menu) and answer a few questions. It prints the equivalent command, then renders.
+
+**Installer:** `package.ps1` also builds `dist\visualiser-setup-<version>.exe` when Inno Setup 6 is installed: per-user, adds to `PATH`, Start Menu, optional "Make visuals" right-click entry.
+
+**Modulation:** each segment routes kick, bands, energy, tension or drop onto 1-2 scene params (`mods` in the plan file; `fixed = true` in a scene's `.toml` opts a param out).
+
 Drag a WAV, FLAC, MP3 or AIFF file onto `visualiser.exe`. It analyses the audio, plans the visuals and renders. The MP4 appears next to the source file.
 
 Options (command line):
@@ -44,7 +50,7 @@ Plain-text marker file: one line per marker, `mm:ss Artist - Title`. Add `@scene
 
 ```
 cargo build --release
-powershell -File package.ps1   # zip with ffmpeg (put an ffmpeg build + licence in .\ffmpeg\ first)
+powershell -File package.ps1   # zip + installer (needs Inno Setup 6), with ffmpeg (put an ffmpeg build + licence in .\ffmpeg\ first)
 ```
 
 `ffmpeg` must sit next to the exe or be on `PATH`. Design decisions and assumptions: see `ASSUMPTIONS.md`.
