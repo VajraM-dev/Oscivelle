@@ -11,3 +11,14 @@ Copy-Item -Recurse ffmpeg\* $out
 Copy-Item ASSUMPTIONS.md, README.md, docs\USAGE.md $out -ErrorAction SilentlyContinue
 Compress-Archive -Path "$out\*" -DestinationPath dist\visualiser.zip
 Write-Host "dist\visualiser.zip"
+
+# Installer (optional): needs Inno Setup 6.
+$version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+$iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($iscc) {
+    & $iscc "/DAppVersion=$version" installer\visualiser.iss
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+    Write-Host "dist\visualiser-setup-$version.exe"
+} else {
+    Write-Host "Inno Setup 6 not found, skipping the installer (winget install JRSoftware.InnoSetup)"
+}

@@ -1,0 +1,3 @@
+# Link the C runtime statically: friends' PCs may lack vcruntime140.dll.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
