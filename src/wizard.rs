@@ -56,10 +56,11 @@ pub fn to_args(a: &Answers) -> Vec<String> {
     v
 }
 
-/// Copy-pasteable command line (args with spaces quoted).
+/// Copy-pasteable command line (args with spaces or shell metacharacters quoted).
 pub fn command_line(args: &[String]) -> String {
+    let plain = |a: &str| a.chars().all(|c| c.is_alphanumeric() || "-_.:/\\".contains(c));
     std::iter::once("visualiser".to_string())
-        .chain(args.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() }))
+        .chain(args.iter().map(|a| if plain(a) { a.clone() } else { format!("\"{a}\"") }))
         .collect::<Vec<_>>()
         .join(" ")
 }

@@ -78,8 +78,10 @@ fn main() {
     let argc = std::env::args().len();
     // No arguments = double-clicked / Start Menu (guided mode); one = a file dragged onto the exe
     // or the right-click menu. Keep the console open in both cases so the result can be read.
-    let pause = argc <= 2;
-    let result = if argc == 1 { guided() } else { run(Cli::parse()) };
+    // Scripts / redirected stdin get neither the questions nor the pause.
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let pause = tty && argc <= 2;
+    let result = if argc == 1 && tty { guided() } else { run(Cli::parse()) };
     if let Err(e) = &result {
         eprintln!("error: {e:#}");
     }
@@ -93,7 +95,13 @@ fn main() {
 }
 
 fn guided() -> Result<()> {
-    let args = wizard::to_args(&wizard::ask()?);
+    use inquire::InquireError::{OperationCanceled, OperationInterrupted};
+    let answers = match wizard::ask() {
+        // Esc / Ctrl-C: the user quit, not an error.
+        Err(e) if matches!(e.downcast_ref(), Some(OperationCanceled | OperationInterrupted)) => return Ok(()),
+        r => r?,
+    };
+    let args = wizard::to_args(&answers);
     println!("\nSame thing as a command, for next time:\n  {}\n", wizard::command_line(&args));
     run(Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args))?)
 }

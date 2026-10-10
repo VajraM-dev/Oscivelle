@@ -193,7 +193,12 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     for (i, b) in bounds.iter().enumerate() {
         if let Some(s) = locked(i) {
             let scene = req.force_scene.map_or_else(|| s.scene.clone(), str::to_string);
-            segments.push(Segment { end: ends[i], scene, ..s.clone() });
+            // Saved mods index the saved scene's params; a forced scene gets its own.
+            let mods = match req.force_scene.filter(|&f| f != s.scene) {
+                Some(f) => req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed)),
+                None => s.mods.clone(),
+            };
+            segments.push(Segment { end: ends[i], scene, mods, ..s.clone() });
             continue;
         }
         let rerolls = req.reroll.iter().filter(|&&r| r == i).count() as u64;
@@ -390,12 +395,14 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             u.misc[0] = (prev.hue_shift + dh * f).rem_euclid(1.0);
         }
         // Audio modulation on top of the phrase variations, kept inside each param's range.
+        // Levels (bands, energy) sit around 0.5, so they're centred to swing both ways instead of
+        // pinning the param at one end; kick/tension/drop are envelopes that rest at 0.
         let src = |m: ModSource| match m {
             ModSource::Kick => base.beat[0],
-            ModSource::Bass => base.bands[1],
-            ModSource::Mid => base.bands[2],
-            ModSource::High => base.bands[3],
-            ModSource::Energy => base.shape[0],
+            ModSource::Bass => base.bands[1] - 0.5,
+            ModSource::Mid => base.bands[2] - 0.5,
+            ModSource::High => base.bands[3] - 0.5,
+            ModSource::Energy => base.shape[0] - 0.5,
             ModSource::Tension => base.shape[1],
             ModSource::Drop => base.shape[2],
         };
