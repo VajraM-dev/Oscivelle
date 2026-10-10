@@ -5,6 +5,7 @@ mod preview;
 mod render;
 mod scenes;
 mod types;
+mod wizard;
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
@@ -16,8 +17,8 @@ use types::*;
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// WAV, FLAC, MP3 or AIFF file.
-    audio: PathBuf,
+    /// WAV, FLAC, MP3 or AIFF file. Leave out to be asked a few questions instead.
+    audio: Option<PathBuf>,
     /// What changes the scene. Defaults to markers when --markers is given, else auto.
     #[arg(long, value_enum)]
     mode: Option<Mode>,
@@ -74,14 +75,17 @@ struct Cli {
 }
 
 fn main() {
-    // Dragged onto the exe = exactly one argument; keep the console open so errors can be read.
-    let dragged = std::env::args().len() == 2;
-    let result = run(Cli::parse());
+    let argc = std::env::args().len();
+    // No arguments = double-clicked / Start Menu (guided mode); one = a file dragged onto the exe
+    // or the right-click menu. Keep the console open in both cases so the result can be read.
+    let pause = argc <= 2;
+    let result = if argc == 1 { guided() } else { run(Cli::parse()) };
     if let Err(e) = &result {
         eprintln!("error: {e:#}");
     }
-    if dragged {
-        eprintln!("\nPress Enter to close.");
+    if pause {
+        eprintln!("
+Press Enter to close.");
         let _ = std::io::stdin().read_line(&mut String::new());
     }
     if result.is_err() {
@@ -89,8 +93,17 @@ fn main() {
     }
 }
 
+fn guided() -> Result<()> {
+    let args = wizard::to_args(&wizard::ask()?);
+    println!("
+Same thing as a command, for next time:
+  {}
+", wizard::command_line(&args));
+    run(Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args))?)
+}
+
 fn run(cli: Cli) -> Result<()> {
-    let audio = std::path::absolute(&cli.audio)?;
+    let audio = std::path::absolute(cli.audio.as_deref().ok_or_else(|| anyhow!("no audio file given (run with no arguments for guided mode)"))?)?;
     if !audio.is_file() {
         bail!("not found: {}", audio.display());
     }
