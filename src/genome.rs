@@ -24,7 +24,6 @@ impl Genome {
 
 pub struct Block {
     pub id: String,
-    #[allow(dead_code)] // ponytail: read by the AI genome picker (Phase 5).
     pub description: String,
     pub params: Vec<ParamRange>,
     pub wgsl: String,

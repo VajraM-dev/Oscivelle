@@ -24,12 +24,14 @@ UninstallDisplayIcon={app}\visualiser.exe
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut (you can also drop audio files on it)"
 Name: contextmenu; Description: "Add ""Make visuals"" to the right-click menu of audio files"
+Name: setupai; Description: "Set up AI features now (needs an Anthropic or Amazon Bedrock API key; you can do it later)"; Flags: unchecked
 
 [Files]
 Source: "..\dist\visualiser\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{group}\Visualiser"; Filename: "{app}\visualiser.exe"; WorkingDir: "{app}"
+Name: "{group}\Set up AI"; Filename: "{app}\visualiser.exe"; Parameters: "--setup-ai"
 Name: "{group}\Uninstall Visualiser"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\Visualiser"; Filename: "{app}\visualiser.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
@@ -44,6 +46,12 @@ Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.aiff\shell\Visuali
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.aiff\shell\Visualiser\command"; ValueType: string; ValueName: ""; ValueData: """{app}\visualiser.exe"" ""%1"""; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.aif\shell\Visualiser"; ValueType: string; ValueName: ""; ValueData: "Make visuals"; Flags: uninsdeletekey; Tasks: contextmenu
 Root: HKCU; Subkey: "Software\Classes\SystemFileAssociations\.aif\shell\Visualiser\command"; ValueType: string; ValueName: ""; ValueData: """{app}\visualiser.exe"" ""%1"""; Tasks: contextmenu
+
+[Run]
+Filename: "{app}\visualiser.exe"; Parameters: "--setup-ai"; Description: "Set up AI features"; Tasks: setupai; Flags: waituntilterminated
+
+[UninstallRun]
+Filename: "{app}\visualiser.exe"; Parameters: "--forget-ai"; RunOnceId: "ForgetAI"; Flags: runhidden
 
 [Code]
 const EnvKey = 'Environment';

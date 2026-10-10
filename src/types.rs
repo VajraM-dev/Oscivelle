@@ -141,6 +141,9 @@ pub struct Plan {
     /// Share of generated scenes the plan was made with (--generated).
     #[serde(default)]
     pub generated: f32,
+    /// --vibe text the plan was made with.
+    #[serde(default)]
+    pub vibe: Option<String>,
     /// Scene changes (one per track/marker); contiguous, first starts at 0, last ends at duration.
     pub segments: Vec<Segment>,
 }

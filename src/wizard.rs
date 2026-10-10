@@ -1,7 +1,7 @@
 //! Guided mode: run with no arguments (double-click, Start Menu) → a few questions →
 //! prints the equivalent command → runs it. The answers become ordinary CLI args, so
 //! clap validates them exactly as if typed.
-use crate::markers;
+use crate::{llm, markers};
 use crate::types::{Mode, Quality};
 use anyhow::{bail, Result};
 use clap::ValueEnum;
@@ -15,6 +15,7 @@ pub struct Answers {
     pub markers: Option<PathBuf>,
     pub mode: Option<Mode>,
     pub generated: Option<f32>,
+    pub vibe: Option<String>,
     pub quality: Option<Quality>,
     pub resolution: Option<u32>,
     pub preview: Option<String>,
@@ -38,6 +39,9 @@ pub fn to_args(a: &Answers) -> Vec<String> {
     }
     if let Some(g) = a.generated {
         v.extend(["--generated".into(), g.to_string()]);
+    }
+    if let Some(t) = &a.vibe {
+        v.extend(["--vibe".into(), t.clone()]);
     }
     if let Some(q) = &a.quality {
         v.extend(["--quality".into(), val(q)]);
@@ -95,6 +99,12 @@ pub fn ask() -> Result<Answers> {
         2 => Some(1.0),
         _ => None,
     };
+    if llm::load().is_some() {
+        let t = Text::new("Describe the vibe (optional, Enter to skip):").prompt()?;
+        a.vibe = Some(t.trim().to_string()).filter(|t| !t.is_empty());
+    } else {
+        println!("\x1b[2mTip: run \"visualiser --setup-ai\" to describe visuals in words.\x1b[0m");
+    }
 
     let kinds = vec!["Full video", "Quick 30-second test (draft quality, fast)"];
     if Select::new("What do you want to make?", kinds).raw_prompt()?.index == 1 {
@@ -149,6 +159,7 @@ mod tests {
             audio: "C:/My Music/mix.flac".into(),
             mode: Some(Mode::Single),
             generated: Some(1.0),
+            vibe: Some("dark and liquid".into()),
             quality: Some(Quality::Draft),
             preview: Some("1:30".into()),
             seed: Some(7),
@@ -156,13 +167,14 @@ mod tests {
             ..Default::default()
         };
         let args = to_args(&a);
-        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --quality draft --preview 1:30 --seed 7 --no-grain");
+        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain");
         let cli = crate::Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args)).unwrap();
         assert_eq!(cli.audio.as_deref(), Some(std::path::Path::new("C:/My Music/mix.flac")));
         assert_eq!(cli.mode, Some(Mode::Single));
         assert_eq!(cli.quality, Quality::Draft);
         assert_eq!(cli.seed, 7);
         assert_eq!(cli.generated, 1.0);
+        assert_eq!(cli.vibe.as_deref(), Some("dark and liquid"));
         assert!(cli.no_grain && !cli.no_titles);
     }
 }

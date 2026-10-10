@@ -129,6 +129,7 @@ impl Judge {
             seed: 0,
             mode: Mode::Single,
             generated: 0.0,
+            vibe: None,
             segments: vec![Segment {
                 start: 0.0,
                 end: analysis.duration,

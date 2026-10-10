@@ -1,19 +1,21 @@
 mod analysis;
+mod author;
 mod director;
 mod evolve;
 mod genome;
-#[allow(dead_code)] mod llm;
+mod llm;
 mod markers;
 mod preview;
 mod render;
 mod scenes;
 mod score;
 mod types;
+mod vibe;
 mod wizard;
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use types::*;
 
@@ -83,6 +85,18 @@ struct Cli {
     /// Copy segment N's generated scene into scenes/ as a hand-made one (keep a look you love).
     #[arg(long)]
     keep: Option<usize>,
+    /// Describe the visuals in words (needs an AI key: see --setup-ai).
+    #[arg(long)]
+    vibe: Option<String>,
+    /// Store an Anthropic or Amazon Bedrock API key for the AI features.
+    #[arg(long)]
+    setup_ai: bool,
+    /// Remove the stored AI key.
+    #[arg(long)]
+    forget_ai: bool,
+    /// Dev: have the AI write a new hand-editable scene from a description (needs --setup-ai), then audition it with --dev --scene <id>.
+    #[arg(long)]
+    author: Option<String>,
 }
 
 fn main() {
@@ -91,7 +105,8 @@ fn main() {
     // or the right-click menu. Keep the console open in both cases so the result can be read.
     // Scripts / redirected stdin get neither the questions nor the pause.
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    let pause = tty && argc <= 2;
+    // --forget-ai runs hidden from the uninstaller: nobody to press Enter.
+    let pause = tty && argc <= 2 && std::env::args().nth(1).as_deref() != Some("--forget-ai");
     let result = if argc == 1 && tty { guided() } else { run(Cli::parse()) };
     if let Err(e) = &result {
         eprintln!("error: {e:#}");
@@ -118,6 +133,14 @@ fn guided() -> Result<()> {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    if cli.setup_ai {
+        return llm::setup();
+    }
+    if cli.forget_ai {
+        llm::forget()?;
+        println!("AI key removed.");
+        return Ok(());
+    }
     let audio = std::path::absolute(cli.audio.as_deref().ok_or_else(|| anyhow!("no audio file given (run with no arguments for guided mode)"))?)?;
     if !audio.is_file() {
         bail!("not found: {}", audio.display());
@@ -134,8 +157,18 @@ fn run(cli: Cli) -> Result<()> {
     if !(0.0..=1.0).contains(&cli.generated) {
         bail!("--generated must be between 0 and 1");
     }
+    // A vibe only steers generated scenes, so it implies some.
+    let generated = if cli.vibe.is_some() && cli.generated == 0.0 { 1.0 } else { cli.generated };
 
     let analysis = load_or_analyse(&audio, cli.reanalyse)?;
+
+    if let Some(prompt) = &cli.author {
+        let c = llm::load().ok_or_else(|| anyhow!("--author needs an AI key: run visualiser --setup-ai"))?;
+        let mut judge = score::Judge::new(&scenes, &scenes_dir, cli.cpu)?;
+        let id = author::run(&c, &mut judge, &scenes_dir, &analysis, prompt)?;
+        println!("new scene: scenes/{id}.wgsl  →  try: visualiser {} --dev --scene {id}", audio.display());
+        return Ok(());
+    }
 
     let markers = match &cli.markers {
         Some(p) => markers::load(p)?,
@@ -158,10 +191,10 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.seed == cli.seed && p.mode == mode && p.generated == cli.generated);
+        && previous.as_ref().is_some_and(|p| p.seed == cli.seed && p.mode == mode && p.generated == generated && p.vibe == cli.vibe);
     // Blocks only when something is (or was) generated.
     let gen_dir = sibling(&audio, "gen");
-    let blocks = if cli.generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
+    let blocks = if generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
         Some(genome::Blocks::load(&scenes_dir.join("blocks"))?)
     } else {
         None
@@ -173,23 +206,42 @@ fn run(cli: Cli) -> Result<()> {
         }
         mut previous => {
             // --replan keeps only locked segments from the saved plan.
-            if cli.replan {
+            // So does a changed vibe (the director would otherwise keep the old looks).
+            if cli.replan || previous.as_ref().is_some_and(|p| p.vibe != cli.vibe) {
                 if let Some(p) = &mut previous {
                     p.segments.retain(|s| s.locked);
                 }
             }
             // The judge (a small headless renderer) only exists while planning with generation on.
             let judge = match &blocks {
-                Some(_) if cli.generated > 0.0 => Some(RefCell::new(score::Judge::new(&scenes, &scenes_dir, cli.cpu)?)),
+                Some(_) if generated > 0.0 => Some(RefCell::new(score::Judge::new(&scenes, &scenes_dir, cli.cpu)?)),
                 _ => None,
             };
+            // Vibe -> starting genomes. AI trouble never fails a render: warn and evolve without seeds.
+            let seeds = match (&cli.vibe, &blocks, &judge) {
+                (Some(v), Some(blocks), Some(_)) => match llm::load() {
+                    None => {
+                        eprintln!("warning: no AI key set up (run visualiser --setup-ai); continuing without the vibe");
+                        Vec::new()
+                    }
+                    Some(c) => vibe::genomes(&c, blocks, &analysis, v, &sibling(&audio, "vibe.json")).unwrap_or_else(|e| {
+                        eprintln!("warning: vibe failed ({e:#}); continuing without it");
+                        Vec::new()
+                    }),
+                },
+                _ => Vec::new(),
+            };
+            // Each generated segment starts from a different seed.
+            let k = Cell::new(0);
             let budget = if cli.quality == Quality::Draft { 10 } else { 20 };
             let evolved = |start: f64, end: f64, r| {
                 let (judge, blocks) = (judge.as_ref()?, blocks.as_ref()?);
                 eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
-                evolve::best(&mut judge.borrow_mut(), blocks, &gen_dir, &analysis, start, end, r, &[], budget)
+                let i = k.replace(k.get() + 1) % seeds.len().max(1);
+                let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
+                evolve::best(&mut judge.borrow_mut(), blocks, &gen_dir, &analysis, start, end, r, &rotated, budget)
             };
-            let plan = director::plan(&director::PlanRequest {
+            let mut plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
                 mode,
@@ -198,11 +250,12 @@ fn run(cli: Cli) -> Result<()> {
                 previous: previous.as_ref(),
                 reroll: &cli.reroll,
                 force_scene: cli.scene.as_deref(),
-                generated: cli.generated,
+                generated,
                 genome_for: Some(&evolved),
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
             })?;
+            plan.vibe = cli.vibe.clone();
             // The dev --scene plan is throwaway; don't overwrite the real one.
             if cli.scene.is_none() {
                 std::fs::write(&plan_path, serde_json::to_string_pretty(&plan)?)?;

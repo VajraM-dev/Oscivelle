@@ -283,7 +283,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, segments })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: None, segments })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
