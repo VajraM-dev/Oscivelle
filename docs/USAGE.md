@@ -561,7 +561,7 @@ What it adds:
 - **Space folds:** the plane is folded (mirrors, kaleidoscopes, hyperbolic folds) before the motion and the emitter see it, so trails and shapes inherit the symmetry.
 - **Blend modes:** how the new emission is laid onto the fading previous frame.
 - **Six moods:** `calm`, `dark`, `mono`, `sparse`, `glitch` and `maximal`. A mood sets how fast trails fade, how hard the emitter is driven and how the finish pass looks. The judge uses each mood's own brightness and motion limits, so a `dark` look isn't rejected for being dark.
-- **19 new blocks** in `sceneslocks\`: space folds, feedback operators and emitters. See [Scene blocks](#scene-blocks).
+- **19 new blocks** in `scenes\blocks\`: space folds, feedback operators and emitters. See [Scene blocks](#scene-blocks).
 - **Onset hits:** snares and kicks drive the visuals directly (a snare envelope, a sharp kick punch, time since the last snare), not only the smoothed kick.
 - **Drop build-ups:** the picture darkens half a bar before a drop and explodes on it.
 - **Glitch looks:** strobe, RGB split, tear and invert, on moods `glitch` and `maximal` only. They are gated on downbeats and snares.
@@ -593,6 +593,25 @@ Engine 2 also plans a whole show, not only single looks:
 ```
 visualiser.exe song.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed 3
 ```
+
+### Grammars
+
+Each engine-2 look first draws a visual grammar, then picks its blocks from that grammar only. Five grammars, equal odds, drawn from the segment seed:
+
+- **radial:** the full classic engine-2 library: tunnels, kaleidoscopes, 3D, zoom about the centre.
+- **flow:** drifting, shearing fields with no centre.
+- **grid:** tiled, pixelated or banded space with stepped or halftone emitters.
+- **scroll:** the picture slides past (scan lines, waves, scatter).
+- **still:** a held camera. Things appear and fade in place.
+
+The four non-radial grammars avoid centred, spinning, tunnel and 3D blocks and strong zoom about the centre. Measured over many seeds, centred looks fell from about 91% to 13%, rotating looks from 76% to 13% and zooming looks from 68% to 17%. Looks with none of rotation, zoom, tunnel, centred or 3D went from about 3% to 78%.
+
+- **Folds are rarer:** a space fold is used in 1 look in 3 (it was 5 in 6).
+- **Phrase variants stay in the look's grammar** and often drop a fold or framing instead of adding one.
+- **The judge allows for it:** `still` looks get a quarter of the minimum-motion floor and `grid` looks half. A centredness measure steers the picker away from repeating centred looks.
+- **13 new blocks:** motions `drift`, `shear`, `sink`, `still`, `stutter`; spaces `tile`, `pixel`, `bands`; emitters `steps`, `scan`, `wave`, `scatter`, `halftone`.
+- **Seeds changed:** the same `--seed` gives a different engine-2 take than before this change. Saved plans still render identically, and engine 1 is unchanged.
+- The look's grammar is saved in `plan.json` (`genome.grammar`).
 
 ---
 

@@ -99,6 +99,19 @@ Build first: `cargo build --release`. Use a scratch copy of `dnb8.wav` in `testd
 - [ ] Saved plan is unchanged by the branch. Build the base commit in a worktree (`git worktree add ..\rv-base 231afa2`, `cargo build --release`), with `-threads 1` added to the x264 args in `src\render\mod.rs` in both trees (see section 9; revert afterwards). Run the base with `--engine 2 --replan --preview 1:00 --quality draft` on its own wav copy. Copy its `plan.json` into the branch project's folder (the branch wav copy's `projects\<stem>-<hash>`), then run the branch with no `--replan`. It must print "using saved plan". `ffmpeg -i <preview>.mp4 -f framemd5 -an <x>.md5` for both: the files must be equal.
 - [ ] Planning time: time the `--replan` run on base and on the branch (same wav, `--engine 2 --generated 1`). The branch plans one more judged look per drop, so it is a bit slower. Flag it if it takes more than 2x the base.
 
+## 11. Engine 2 grammars
+
+Build first: `cargo build --release`. Use a scratch copy of `dnb8.wav` in `testdata\`. `BASE` is commit `7fdc5cc` (before grammars).
+
+- [ ] Smoke, one per grammar (radial, flow, grid, scroll, still): run `target\release\visualiser testdata\dnb8.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed N` for N = 1, 2, 3, ... (or add `--plan-only` to find seeds quickly). After each run, grep the project's `plan.json` for `"grammar"` (under each segment's `genome`). Stop when all five have a render (cap 25 seeds), then **watch** them. Look for:
+  - flow, grid, scroll and still do not read as tunnels, rotation or a centred fold.
+  - still holds its camera.
+  - Every segment has a `genome` (no grammar fell back to a hand-made scene).
+- [ ] `motion_sink` seams: in a look that uses it (grep `plan.json` for `motion_sink`), check for visible seams or tearing along the edges as it sinks.
+- [ ] Engine 1 is byte-identical to `main`: use the method in section 9 (worktree, `-threads 1` in both trees, own wav copy each) with `target\release\visualiser <wav> --engine 1 --replan --preview 1:00 --quality draft --seed 1` in both, then compare the `ffmpeg -i <preview>.mp4 -f framemd5 -an <x>.md5` files. They must be equal.
+- [ ] Saved engine-2 plan is unchanged: build `BASE` in a worktree (`git worktree add ..\rv-base 7fdc5cc`) with the same `-threads 1` patch. Run it with `--engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed 3` on its own wav copy, copy its `plan.json` into the branch project's folder, then run the branch with the same args and no `--replan`. It must print "using saved plan", and the framemd5 files must be equal. Repeat with `--seed 5`. Revert `-threads 1` and remove the worktrees afterwards.
+- [ ] Planning time: time the `--replan` run on base and on the branch (same wav, `--engine 2 --generated 1`). Flag it if the branch takes more than 2x the base.
+
 ## Known gaps (not bugs, decided)
 
 - A saved plan that names a block that has since been deleted stops with an error; `--replan` fixes it.
