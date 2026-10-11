@@ -83,7 +83,7 @@ Build first: `cargo build --release`. Copy `dnb8.wav` from `C:\Prathamesh\Ableto
   - No flashes faster than once per bar.
 - [ ] Engine 1 is byte-identical to `main`. Build `main` in a separate git worktree (`git worktree add ..\rv-main main`, then `cargo build --release` there). Give each tree its own copy of the wav in its own folder, so the two projects don't share a data folder.
   **Caveat:** libx264 multithreaded encoding is not repeatable run to run. In BOTH trees, temporarily add `-threads 1` to the x264 args in `src\render\mod.rs` (~line 167), rebuild, then revert it afterwards.
-  - [ ] Run `visualiser <wav> --replan --preview 1:00 --quality draft` in each tree, then `ffmpeg -i <preview>.mp4 -f framemd5 -an <main|branch>.md5`. The two `.md5` files must be equal.
+  - [ ] Run `visualiser <wav> --replan --preview 1:00 --quality draft` in each tree, adding `--engine 1` on the branch run only (engine 2 is the branch default; `main` has no such flag), then `ffmpeg -i <preview>.mp4 -f framemd5 -an <main|branch>.md5`. The two `.md5` files must be equal.
   - [ ] Repeat with `--layers` added. On the `main` run, move the 6 untracked `scenes\blocks\*runner*` / `*trippy*` files aside first (main loads them, the branch pins them out) and put them back afterwards.
   - [ ] Revert the `-threads 1` change in both trees.
 

@@ -60,6 +60,7 @@ Run `visualiser.exe` with no arguments, by double-clicking it or from the Start 
 - **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
 - **Motion graphics** (generated styles only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only.
 - **Who designs the visuals** is asked only when an AI service is set up. "Core engine only" is free and works offline. "Let AI design it" asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. Without an AI service it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
+- **Visuals?** (generated styles, core engine only): Variety (recommended, `--engine 2`: new folds, moods, fractals, glitch) or Classic (`--engine 1`: the original looks). See [Engine 2](#engine-2---engine-2).
 - **Your own pictures** is asked after motion graphics or an AI description: pick PNG/JPG files (`--image`, up to 8). Full-frame photos become backdrops, transparent PNGs float as cut-outs.
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
@@ -547,11 +548,11 @@ visualiser.exe song.wav --replan --layers --look mono --preview 1:00 --quality d
 
 ## Engine 2: `--engine 2`
 
-An opt-in generator that makes every `--seed` a structurally different piece. Without AI, each retry changes the fold, motion, emitter, blend, mood and palette together.
+The default generator for new projects. It makes every `--seed` a structurally different piece. Without AI, each retry changes the fold, motion, emitter, blend, mood and palette together.
 
 | Option | Values | Default | Description |
 |---|---|---|---|
-| `--engine <N>` | `1`, `2` | the saved plan's value, else `1` | `2` evolves generated scenes with the engine-2 parts below. |
+| `--engine <N>` | `1`, `2` | the saved plan's value, else `2` | `2` evolves generated scenes with the engine-2 parts below. `1` = the original (classic) looks. |
 
 What it adds:
 
@@ -566,8 +567,10 @@ What it adds:
 Notes:
 
 - `--generated` still sets how many segments are generated. Use `--generated 1` to make every segment engine 2.
+- **New projects use engine 2.** Projects with a saved plan keep their engine (plans saved before engine 2 existed are engine 1). `--engine 1` forces the classic looks.
 - The engine is saved in the plan, so a plain re-run (and a render from the saved plan) keeps using it. Changing `--engine` makes a new plan.
-- **Engine 1 is unchanged.** The default output is the same as before. New blocks, AI blocks and `--keep` scenes never alter engine-1 seeds.
+- The guided mode asks **Visuals?** (Variety = engine 2, Classic = engine 1) when the core engine designs the visuals.
+- **Engine 1 is unchanged.** `--engine 1` output is the same as before. New blocks, AI blocks and `--keep` scenes never alter engine-1 seeds.
 - **Re-analysis:** after upgrading, each project is analysed once again (the analysis format gained snare onsets). This applies to all runs, not just engine 2.
 - **Flash limit:** strobe and invert flashes are limited to at most one per bar, under the 3 Hz limit in WCAG.
 - `--vibe` keeps engine-1 looks.

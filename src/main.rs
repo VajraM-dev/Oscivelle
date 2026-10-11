@@ -100,8 +100,8 @@ struct Cli {
     /// Finishing look for the whole video: clean, vhs, crt or mono.
     #[arg(long, value_enum)]
     look: Option<Look>,
-    /// Visual engine: 1 = the original looks (default), 2 = space folds, blend modes, moods, new blocks, onset hits
-    /// and drop build-ups (every seed a different piece). Default: the saved plan's, else 1.
+    /// Visual engine: 1 = the original looks, 2 = space folds, blend modes, moods, new blocks, onset hits
+    /// and drop build-ups (every seed a different piece). Default: the saved plan's engine, else 2.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=2))]
     engine: Option<u32>,
     /// Scenes the director picks on its own: builtin = the shipped ones (stable seeds), all = also --keep and
@@ -202,7 +202,8 @@ fn run(cli: Cli) -> Result<()> {
 
     let plan_path = data.join("plan.json");
     let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
-    let engine = cli.engine.or(previous.as_ref().map(|p| p.engine)).unwrap_or(1);
+    // New projects get engine 2; a saved plan without `engine` reads as 1, so old projects keep their looks.
+    let engine = cli.engine.or(previous.as_ref().map(|p| p.engine)).unwrap_or(2);
     let pool = cli.pool.or(previous.as_ref().map(|p| p.pool)).unwrap_or_default();
     // Older analyses (no snares) are redone once.
     let analysis = load_or_analyse(&audio, &data, cli.reanalyse)?;
@@ -371,7 +372,8 @@ fn run(cli: Cli) -> Result<()> {
             };
             let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if story.is_empty() { &dressed } else { &storyboard };
             let shots = if story.is_empty() { shots } else { story.iter().map(|(s, _)| *s).collect() };
-            if looks < engine {
+            // Only when engine 2 was asked for: it's the default, so the note would otherwise show on every vibe.
+            if looks < engine && cli.engine.is_some() {
                 eprintln!("note: --vibe uses engine 1 looks");
             }
             let mut plan = director::plan(&director::PlanRequest {
