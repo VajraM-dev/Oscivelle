@@ -31,7 +31,7 @@ pub fn get(name: &str) -> Option<&'static Regime> {
 
 /// The judge's ranges for a regime, recipe (genome::TEMPLATES) and grammar (genome::GRAMMARS): stateless looks
 /// redraw every frame, so they move more and carry more fine detail than trails; dual looks stack two emitters
-/// and clip a bit more; still looks hold the camera, so only their emitter moves.
+/// and clip a bit more; still looks hold the camera, so only their emitter moves; grid looks may hold between kicks.
 // ponytail: hand-set factors; retune from the gate's smoke renders if a recipe or grammar never (or always) passes.
 pub fn gate(r: &Regime, template: &str, grammar: &str) -> Thresholds {
     let th = r.th;
@@ -40,7 +40,12 @@ pub fn gate(r: &Regime, template: &str, grammar: &str) -> Thresholds {
         "dual" => Thresholds { max_clipped: th.max_clipped * 1.3, ..th },
         _ => th,
     };
-    if grammar == "still" { Thresholds { motion: (th.motion.0 * 0.25, th.motion.1), ..th } } else { th }
+    match grammar {
+        "still" => Thresholds { motion: (th.motion.0 * 0.25, th.motion.1), ..th },
+        // Grid looks (motion_stutter) hold still between kicks.
+        "grid" => Thresholds { motion: (th.motion.0 * 0.5, th.motion.1), ..th },
+        _ => th,
+    }
 }
 
 #[cfg(test)]
@@ -66,5 +71,7 @@ mod tests {
         assert!(gate(r, "dual", "").max_clipped > r.th.max_clipped);
         let still = gate(r, "", "still");
         assert!(still.motion.0 < r.th.motion.0 && still.motion.1 == r.th.motion.1);
+        let grid = gate(r, "", "grid");
+        assert!(still.motion.0 < grid.motion.0 && grid.motion.0 < r.th.motion.0 && grid.motion.1 == r.th.motion.1);
     }
 }

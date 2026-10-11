@@ -56,10 +56,17 @@ pub fn metrics(frames: &[Vec<f32>], w: usize, kicks: &[f32]) -> Metrics {
 }
 
 /// How centred one frame is, 0..1: the best Pearson correlation of the frame with its left-right mirror or
-/// with itself turned 1/2, 1/3, 1/4 or 1/5 of a turn about the centre (inside the inscribed circle).
+/// with itself turned 1/2, 1/3, 1/4 or 1/5 of a turn about the centre (inside the inscribed circle). Each row's
+/// mean is removed first: whatever is constant along x (horizontal bars, a flat waveform, bands, a flat frame) is
+/// trivially its own mirror and carries no evidence of a centre, so it scores 0.
 // ponytail: four turns (nearest pixel); 7+ wedge counts read lower. Add turns if the picker lets them through.
 fn centred(f: &[f32], w: usize) -> f32 {
     let h = f.len() / w.max(1);
+    let f: Vec<f32> = f.chunks(w).flat_map(|r| {
+        let m = r.iter().sum::<f32>() / w as f32;
+        r.iter().map(move |v| v - m)
+    }).collect();
+    let f = &f[..];
     let (a, b): (Vec<f32>, Vec<f32>) = f.chunks(w).flat_map(|r| (0..w).map(move |x| (r[x], r[w - 1 - x]))).unzip();
     let mirror = pearson(&a, &b);
     let (cx, cy, rr) = (w as f32 / 2.0, h as f32 / 2.0, h as f32 / 2.0);
@@ -355,6 +362,10 @@ mod tests {
         let blob = at(&|x, y| (-((x - 14.0).powi(2) + (y - 6.0).powi(2)) / 30.0).exp());
         assert!(centred(&rings, w) > 0.9, "{}", centred(&rings, w));
         assert!(centred(&noise, w) < 0.3 && centred(&blob, w) < 0.3, "{} {}", centred(&noise, w), centred(&blob, w));
+        // Uniform along x is no evidence of a centre: horizontal stripes and a horizontal sweep bar (even through the middle).
+        let stripes = at(&|_, y| 0.5 + 0.5 * (0.7 * y).sin());
+        let bar = at(&|_, y| (-(y * y) / 4.0).exp());
+        assert!(centred(&stripes, w) < 0.3 && centred(&bar, w) < 0.3, "{} {}", centred(&stripes, w), centred(&bar, w));
         let mut flat = d;
         flat[2] = 0.1;
         let mut round = d;

@@ -89,6 +89,8 @@ engine-2 motion, emitter, space or comp block needs an entry there (and in `V2_B
 - **radial**: the classic library: tunnels, folds, spins. Anything centred goes here only.
 - **flow**: advected fields with no centre and no spin. **grid**: tiles, mosaics, sequencers, blocky jumps.
   **scroll**: the picture slides one way. **still**: the camera holds; motion is decay only (or kick jumps).
-- Non-radial blocks: no time-driven rotation, no zoom about the frame centre, nothing centred. A zoom must be
-  inward (< 1) and about an off-centre point.
+- Non-radial blocks: no time-driven rotation, no steady or strong zoom about the frame centre, nothing
+  centred. A few older blocks (motion_swirl's kick and drop zoom, motion_etch, motion_mosh) keep a tiny zoom about the
+  centre; new blocks must not zoom about the centre at all. A zoom must be inward (< 1), about an off-centre
+  point, and tagged `Z`.
 - Motions that slide the whole frame may wrap with `fract(uv)` instead of mirroring off the edge.
