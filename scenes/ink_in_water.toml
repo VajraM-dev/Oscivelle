@@ -25,6 +25,7 @@ max = 1.0015
 name = "drop_hue"       # palette offset for kick drops
 min = 0.0
 max = 0.08
+fixed = true
 
 [[param]]
 name = "persistence"    # per-step keep factor

@@ -10,6 +10,7 @@ palettes = [
 name = "symmetry"       # mirror segments (integer)
 min = 5.0
 max = 10.0
+fixed = true
 
 [[param]]
 name = "trail_drift"    # extra zoom per step beyond the bloom flow
@@ -35,6 +36,7 @@ max = 1.25
 name = "hue_offset"
 min = 0.0
 max = 1.0
+fixed = true
 
 [[param]]
 name = "ring_spacing"   # log-radius spacing between petal rings

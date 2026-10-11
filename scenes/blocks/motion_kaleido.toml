@@ -1,0 +1,18 @@
+kind = "motion"
+description = "Kaleidoscope: trails fold through rotating mirror wedges and bloom outward into a mandala"
+
+[[param]]
+name = "symmetry"       # mirror segments (integer)
+min = 5.0
+max = 10.0
+fixed = true
+
+[[param]]
+name = "zoom"           # outward zoom per step above 1
+min = 0.002
+max = 0.006
+
+[[param]]
+name = "spin_drift"     # extra rotation, rad per step
+min = -0.003
+max = 0.003

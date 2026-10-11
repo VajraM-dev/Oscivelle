@@ -3,9 +3,10 @@
 //! scene.toml:
 //!   palettes = [["#0b0221", "#6a00f4", "#f72585", "#4cc9f0"], ...]   # sRGB hex, 4 each
 //!   [[param]]
-//!   name = "zoom"   # label only (ignored, like the scene's own `name`)
+//!   name = "zoom"   # label (blocks key tuned values by it; scenes ignore it)
 //!   min = 1.002
 //!   max = 1.02
+//!   fixed = true   # optional: never audio-modulated
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -23,8 +24,23 @@ pub struct Scene {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ParamRange {
+    /// "" when unnamed.
+    #[serde(default)]
+    pub name: String,
     pub min: f32,
     pub max: f32,
+    /// Never audio-modulated: integer params (floor/round in the shader), params that multiply
+    /// time() (the phase would jump) and hue offsets (hue flicker on kicks looks cheap).
+    #[serde(default)]
+    pub fixed: bool,
+}
+
+impl ParamRange {
+    /// `v` moved by `amt` × the range width, kept inside the range (min may exceed max).
+    pub fn nudge(&self, v: f32, amt: f32) -> f32 {
+        let (lo, hi) = (self.min.min(self.max), self.min.max(self.max));
+        (v + amt * (hi - lo)).clamp(lo, hi)
+    }
 }
 
 #[derive(Deserialize)]
@@ -67,14 +83,7 @@ pub fn load_all(dir: &Path) -> Result<Vec<Scene>> {
         if t.palettes.is_empty() {
             bail!("{id}: needs at least one palette");
         }
-        let palettes = t
-            .palettes
-            .iter()
-            .map(|p| -> Result<[[f32; 3]; 4]> {
-                Ok([hex(&p[0])?, hex(&p[1])?, hex(&p[2])?, hex(&p[3])?])
-            })
-            .collect::<Result<_>>()
-            .with_context(|| format!("{id}: palette"))?;
+        let palettes = t.palettes.iter().map(palette).collect::<Result<_>>().with_context(|| format!("{id}: palette"))?;
         scenes.push(Scene { id, params: t.params, palettes, wgsl_path });
     }
     if scenes.is_empty() {
@@ -82,6 +91,11 @@ pub fn load_all(dir: &Path) -> Result<Vec<Scene>> {
     }
     scenes.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(scenes)
+}
+
+/// sRGB hex palette to linear RGB.
+pub fn palette(p: &[String; 4]) -> Result<[[f32; 3]; 4]> {
+    Ok([hex(&p[0])?, hex(&p[1])?, hex(&p[2])?, hex(&p[3])?])
 }
 
 fn hex(s: &str) -> Result<[f32; 3]> {

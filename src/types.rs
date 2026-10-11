@@ -15,6 +15,19 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 
+/// splitmix64 finaliser.
+pub fn mix64(z: u64) -> u64 {
+    let z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Stable 64-bit hash of two values (per-segment / per-candidate seeds).
+pub fn hash(a: u64, b: u64) -> u64 {
+    mix64(a ^ mix64(b))
+}
+
 /// "M:SS", or "H:MM:SS" when `long` (or the value is an hour or more).
 pub fn hms(secs: u64, long: bool) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
@@ -138,8 +151,21 @@ pub struct Plan {
     pub source: String,
     pub seed: u64,
     pub mode: Mode,
+    /// Share of generated scenes the plan was made with (--generated).
+    #[serde(default)]
+    pub generated: f32,
+    /// --vibe text the plan was made with.
+    #[serde(default)]
+    pub vibe: Option<String>,
     /// Scene changes (one per track/marker); contiguous, first starts at 0, last ends at duration.
     pub segments: Vec<Segment>,
+}
+
+impl Plan {
+    /// Made with these settings (its unlocked segments still apply).
+    pub fn same_inputs(&self, seed: u64, mode: Mode, generated: f32, vibe: Option<&str>) -> bool {
+        self.seed == seed && self.mode == mode && self.generated == generated && self.vibe.as_deref() == vibe
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -159,6 +185,32 @@ pub struct Segment {
     pub transition_in: Transition,
     /// Phrase-level variations, ascending by time; the first one is at `start`.
     pub variations: Vec<Variation>,
+    /// Audio routings for this segment: param += depth * (param range) * source, on top of the variations.
+    #[serde(default)]
+    pub mods: Vec<Mod>,
+    /// Set when the scene is generated: `scene` is then `genome.id()` and its .wgsl is rebuilt from this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genome: Option<crate::genome::Genome>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Mod {
+    /// Scene param index (scene.toml order).
+    pub param: usize,
+    pub source: ModSource,
+    /// Fraction of the param's range at source = 1; negative inverts.
+    pub depth: f32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModSource {
+    Kick,
+    Bass,
+    Mid,
+    High,
+    Energy,
+    Tension,
+    Drop,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]

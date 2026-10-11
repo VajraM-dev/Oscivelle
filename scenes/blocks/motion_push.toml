@@ -1,0 +1,12 @@
+kind = "motion"
+description = "Warp speed: everything rushes radially outward with a slow roll, leaving streaks"
+
+[[param]]
+name = "warp_speed"     # outward zoom per step above 1
+min = 0.004
+max = 0.012
+
+[[param]]
+name = "fade"           # per-step trail keep
+min = 0.8
+max = 0.9

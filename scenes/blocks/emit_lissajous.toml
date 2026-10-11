@@ -1,0 +1,16 @@
+kind = "emitter"
+description = "Glowing Lissajous curve rolling slowly, hue along its length, kick thickens it"
+[[param]]
+name = "ratio"        # integer a in a:(a+1)
+min = 1.0
+max = 3.99
+fixed = true
+[[param]]
+name = "size"
+min = 0.4
+max = 0.85
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

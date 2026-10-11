@@ -16,6 +16,8 @@ use std::time::Instant;
 pub struct RenderJob<'a> {
     pub audio: PathBuf,
     pub out: PathBuf,
+    /// Finished chunks, kept for resume (in the track's data folder).
+    pub parts: PathBuf,
     pub plan: &'a Plan,
     pub analysis: &'a Analysis,
     pub scenes: &'a [Scene],
@@ -51,7 +53,7 @@ const TITLE_LEN: f64 = 5.0;
 /// Renders to MP4 (H.264 + AAC from source), chunked with resume. Prints progress + ETA.
 pub fn render_video(job: &RenderJob) -> Result<()> {
     let ffmpeg = find_ffmpeg();
-    let parts = job.out.with_extension("parts");
+    let parts = job.parts.clone();
     let meta = serde_json::json!({ "hash": format!("{:016x}", job_hash(job)?) }).to_string();
     let meta_path = parts.join("job.json");
     if std::fs::read_to_string(&meta_path).ok().as_deref() != Some(meta.as_str()) && parts.exists() {

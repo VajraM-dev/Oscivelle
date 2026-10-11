@@ -272,6 +272,20 @@ impl Engine {
         self.pipelines.keys().chain(&self.failed).cloned().collect()
     }
 
+    /// Registers a scene created after construction (generated scenes); compile it with `compile`.
+    pub fn add_scene(&mut self, scene: Scene) {
+        if !self.scenes.iter().any(|s| s.id == scene.id) {
+            self.scenes.push(scene);
+        }
+    }
+
+    /// Forgets a scene and its compiled pipeline.
+    pub fn remove_scene(&mut self, id: &str) {
+        self.scenes.retain(|s| s.id != id);
+        self.pipelines.remove(id);
+        self.failed.remove(id);
+    }
+
     /// (Re)compiles a scene from disk. On failure an existing pipeline is kept.
     pub fn compile(&mut self, id: &str) -> Result<()> {
         match self.try_compile(id) {
@@ -477,6 +491,24 @@ mod tests {
         let mut e = Engine::new(&device, &queue, &real, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm);
         for s in &real {
             e.compile(&s.id).unwrap();
+        }
+
+        // Every motion x emitter x colour block combination compiles.
+        let blocks = crate::genome::Blocks::load(&dir.join("blocks")).unwrap();
+        let gen_dir = std::env::temp_dir().join("visualiser_gen_test");
+        let (mut gen, mut names) = (Vec::new(), Vec::new());
+        for m in &blocks.motion {
+            for em in &blocks.emitter {
+                for c in &blocks.colour {
+                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: blocks.palettes[0].clone(), params: Default::default() };
+                    gen.push(crate::genome::write(&g, &blocks, &gen_dir).unwrap());
+                    names.push(format!("{} + {} + {}", m.id, em.id, c.id));
+                }
+            }
+        }
+        let mut e = Engine::new(&device, &queue, &gen, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm);
+        for (s, name) in gen.iter().zip(&names) {
+            e.compile(&s.id).unwrap_or_else(|err| panic!("{name}: {err:#}"));
         }
     }
 }

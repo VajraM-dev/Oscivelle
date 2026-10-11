@@ -1,0 +1,16 @@
+kind = "emitter"
+description = "Neon polygon outlines: spinning shape, counter-rotating inner one, kick shockwave outline"
+[[param]]
+name = "sides"        # integer
+min = 3.0
+max = 7.0
+fixed = true
+[[param]]
+name = "size"
+min = 0.35
+max = 0.8
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true
