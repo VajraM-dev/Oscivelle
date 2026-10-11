@@ -183,6 +183,7 @@ const V2_BLOCKS: &[&str] = &[
     "comp_echo", "comp_kaleido", "comp_mirror", "comp_slitscan",
     "motion_drift", "motion_shear", "motion_sink", "motion_still", "motion_stutter", "space_bands", "space_pixel", "space_tile",
     "emit_halftone", "emit_scan", "emit_scatter", "emit_steps", "emit_wave",
+    "emit_metaballs", "emit_pillars", "emit_terrain", "emit_world",
 ];
 
 impl Blocks {
@@ -436,8 +437,9 @@ pub const TEMPLATES: [&str; 2] = ["stateless", "dual"];
 
 /// Engine-2 visual grammars, one per generated segment (drawn before any block, evolve::best_v2): radial
 /// (the classic library: tunnels, folds, spins), flow (advected fields, no centre), grid (tiles, mosaics,
-/// sequencers), scroll (everything slides one way) and still (the camera holds; only the emitter moves).
-pub const GRAMMARS: [&str; 5] = ["radial", "flow", "grid", "scroll", "still"];
+/// sequencers), scroll (everything slides one way), still (the camera holds; only the emitter moves) and depth
+/// (a raymarched 3D emitter, mostly crisp: random_v2 picks "stateless" 3/4 of the time).
+pub const GRAMMARS: [&str; 6] = ["radial", "flow", "grid", "scroll", "still", "depth"];
 
 /// The visual grammar of the segment with `seed` (drawn before any block, evolve::best_v2).
 pub fn grammar_for(seed: u64) -> &'static str {
@@ -460,23 +462,27 @@ const BLOCK_TAGS: &[(&str, &str, &str)] = &[
     ("emit_filaments", "radial flow", "F"),
     ("emit_halftone", "grid still", ""),
     ("emit_hypertile", "radial", "C"),
-    ("emit_kifs3d", "radial", "RD"),
+    ("emit_kifs3d", "radial depth", "RD"),
     ("emit_lissajous", "radial", "RC"),
     ("emit_lyapunov", "radial flow still", ""),
-    ("emit_mandelbox", "radial", "RD"),
+    ("emit_metaballs", "depth", "D"),
+    ("emit_pillars", "depth", "D"),
+    ("emit_terrain", "depth", "D"),
+    ("emit_world", "depth", "D"),
+    ("emit_mandelbox", "radial depth", "RD"),
     ("emit_orbit", "radial", "C"),
     ("emit_polygon", "radial", "RZC"),
     ("emit_rings", "radial", "ZC"),
     ("emit_scan", "grid scroll", ""),
     ("emit_scatter", "flow scroll still", ""),
-    ("emit_sdftunnel", "radial", "RZTD"),
+    ("emit_sdftunnel", "radial depth", "RZTD"),
     ("emit_stars", "radial scroll still", ""),
     ("emit_steps", "grid still", ""),
     ("emit_truchet", "radial grid scroll", ""),
     ("emit_warpfbm", "radial flow", "F"),
     ("emit_wave", "scroll still", ""),
     ("motion_deepzoom", "radial", "RZT"),
-    ("motion_drift", "flow scroll", ""),
+    ("motion_drift", "flow scroll depth", ""),
     ("motion_erode", "radial", "Z"),
     ("motion_etch", "radial flow", "F"),
     ("motion_ink", "radial", "FZ"),
@@ -486,7 +492,7 @@ const BLOCK_TAGS: &[(&str, &str, &str)] = &[
     ("motion_shear", "grid scroll", ""),
     ("motion_sink", "flow", "FZ"),
     ("motion_sort", "radial grid scroll", ""),
-    ("motion_still", "still", ""),
+    ("motion_still", "still depth", ""),
     ("motion_stutter", "grid still", ""),
     ("motion_swirl", "radial flow", "F"),
     ("motion_tunnel", "radial", "RZT"),
@@ -762,7 +768,13 @@ pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime, gramma
         g.palette = cosine_palette(h(5));
     }
     // Recipe: stateless a sixth of the time, dual (a second, different emitter) a sixth, else feedback.
+    // Depth: crisp 3D (stateless) 3/4 of the time, else feedback for light trails; never dual.
     match h(6) % 6 {
+        _ if grammar == "depth" => {
+            if h(0xD3) % 4 != 0 {
+                g.template = TEMPLATES[0].into();
+            }
+        }
         0 => g.template = TEMPLATES[0].into(),
         1 if blocks.emitter.len() > 1 => {
             let others: Vec<&Block> = blocks.emitter.iter().filter(|b| b.id != g.emitter).collect();
@@ -1136,7 +1148,7 @@ mod tests {
     }
 
     /// The point of grammars: over many takes few looks are centred, spinning or zooming, every grammar
-    /// appears, and only radial looks ever use a centred, spinning, tunnel or 3D block.
+    /// appears, and only radial looks ever use a centred, spinning, tunnel or 3D block (depth: 3D, never centred).
     #[test]
     fn takes_vary_their_visual_grammar() {
         let b = tagged_library();
@@ -1157,8 +1169,11 @@ mod tests {
                 ids.push(&g.motion);
             }
             let f: String = ids.iter().map(|id| looks(id)).collect();
-            if grammar != "radial" {
-                assert!(!f.contains(['R', 'T', 'C', 'D']), "{grammar}: {g:?}");
+            // Depth is 3D on purpose (its camera may spin or fly a tunnel), but never centred symmetry.
+            match grammar {
+                "radial" => {}
+                "depth" => assert!(!f.contains('C'), "{grammar}: {g:?}"),
+                _ => assert!(!f.contains(['R', 'T', 'C', 'D']), "{grammar}: {g:?}"),
             }
             centred += f.contains('C') as u64;
             spin += f.contains('R') as u64;
@@ -1166,8 +1181,9 @@ mod tests {
             plain += !f.contains(['R', 'Z', 'T', 'C', 'D']) as u64;
         }
         let pct = |k: u64| 100 * k / n;
-        // Before grammars (sim.py): centred 91%, spin 76%, zoom 68%, none of them 3%.
-        assert!(pct(centred) <= 20 && pct(spin) <= 20 && pct(zoom) <= 25 && pct(plain) >= 70, "centred {}% spin {}% zoom {}% plain {}%", pct(centred), pct(spin), pct(zoom), pct(plain));
+        // Before grammars (sim.py): centred 91%, spin 76%, zoom 68%, none of them 3%. Depth (1/6 of takes) is
+        // 3D on purpose, so plain sits near 64%.
+        assert!(pct(centred) <= 20 && pct(spin) <= 20 && pct(zoom) <= 25 && pct(plain) >= 60, "centred {}% spin {}% zoom {}% plain {}%", pct(centred), pct(spin), pct(zoom), pct(plain));
         assert_eq!(seen.len(), GRAMMARS.len());
         // Each non-radial grammar has enough to vary: at least two motions and three emitters.
         for gr in &GRAMMARS[1..] {

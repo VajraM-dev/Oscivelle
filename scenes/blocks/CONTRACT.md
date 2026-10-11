@@ -83,12 +83,18 @@ pass is fed back, so the simulation underneath keeps its own shape.
   - Dual looks never get a backdrop or overlay, because they use those slots.
 
 ## Engine 2: grammars
-Each generated look has a **grammar** (`Genome::grammar`: radial, flow, grid, scroll, still) drawn before
+Each generated look has a **grammar** (`Genome::grammar`: radial, flow, grid, scroll, still, depth) drawn before
 its blocks. It picks only from blocks tagged with that grammar in `BLOCK_TAGS` (`src/genome.rs`), so a new
 engine-2 motion, emitter, space or comp block needs an entry there (and in `V2_BLOCKS`), or no grammar uses it.
 - **radial**: the classic library: tunnels, folds, spins. Anything centred goes here only.
 - **flow**: advected fields with no centre and no spin. **grid**: tiles, mosaics, sequencers, blocky jumps.
   **scroll**: the picture slides one way. **still**: the camera holds; motion is decay only (or kick jumps).
+- **depth**: one raymarched 3D emitter (tag `D`), crisp: `"stateless"` 3/4 of the time, else feedback for
+  light trails, never dual; motions are motion_still / motion_drift only, no space or comp folds. A depth
+  emitter raymarches inside `emit(p)` (p = centred coords → camera ray) and returns the usual
+  (intensity ≥ 0, roughly 0..1.5; hue 0..1), so any colour block works. Cap the steps
+  (`select(48, 96, quality() > 0.5)`) and the distance; prefix every helper with the block id (`emit_world_de`).
+  The camera may move (orbit, fly), but nothing centred-symmetric (no `C`).
 - Non-radial blocks: no time-driven rotation, no steady or strong zoom about the frame centre, nothing
   centred. A few older blocks (motion_swirl's kick and drop zoom, motion_etch, motion_mosh) keep a tiny zoom about the
   centre; new blocks must not zoom about the centre at all. A zoom must be inward (< 1), about an off-centre
