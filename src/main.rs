@@ -2,6 +2,7 @@ mod analysis;
 mod author;
 mod director;
 mod evolve;
+mod font;
 mod genome;
 mod llm;
 mod markers;

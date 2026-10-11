@@ -47,14 +47,25 @@ impl Genome {
         Ok(match kind_index(kind)? {
             0 => &mut self.motion,
             1 => &mut self.emitter,
-            _ => &mut self.colour,
+            2 => &mut self.colour,
+            3 => &mut self.backdrop,
+            _ => &mut self.overlay,
         })
     }
 
-    /// Keeps only finite tuned values whose key names a param of this genome's three blocks.
+    /// Has a backdrop or overlay (so it also has a layer pass).
+    pub fn has_layers(&self) -> bool {
+        !self.backdrop.is_empty() || !self.overlay.is_empty()
+    }
+
+    /// Keeps only finite tuned values whose key names a param of this genome's blocks.
     pub fn prune(&mut self, blocks: &Blocks) {
-        let Ok(parts) = blocks.parts(self) else { return self.params.clear() };
-        let keys: Vec<String> = parts.iter().flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name))).collect();
+        let (Ok(parts), Ok(layers)) = (blocks.parts(self), blocks.layer_parts(self)) else { return self.params.clear() };
+        let keys: Vec<String> = parts
+            .into_iter()
+            .chain(layers.into_iter().flatten())
+            .flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name)))
+            .collect();
         self.params.retain(|k, v| keys.contains(k) && v.is_finite());
     }
 }
@@ -78,6 +89,9 @@ pub struct Blocks {
     pub motion: Vec<Block>,
     pub emitter: Vec<Block>,
     pub colour: Vec<Block>,
+    /// Layer blocks (optional kinds).
+    pub backdrop: Vec<Block>,
+    pub overlay: Vec<Block>,
     /// Palette bank, sRGB hex.
     pub palettes: Vec<[String; 4]>,
 }
@@ -89,11 +103,11 @@ struct BlockToml {
     params: Vec<ParamRange>,
 }
 
-/// Block kinds; `SLOTS` and the `Blocks` lists follow this order.
-pub const KINDS: [&str; 3] = ["motion", "emitter", "colour"];
+/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last two (layers) are optional.
+pub const KINDS: [&str; 5] = ["motion", "emitter", "colour", "backdrop", "overlay"];
 
-/// Param slots per kind (8 total, the scene uniform limit).
-const SLOTS: [usize; 3] = [3, 3, 2];
+/// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13).
+const SLOTS: [usize; 5] = [3, 3, 2, 4, 2];
 
 fn kind_index(kind: &str) -> Result<usize> {
     KINDS.iter().position(|k| *k == kind).with_context(|| format!("unknown kind {kind}"))
@@ -120,7 +134,7 @@ impl Blocks {
             palettes: Vec<[String; 4]>,
         }
         let pal: Pal = toml::from_str(&std::fs::read_to_string(dir.join("palettes.toml")).context("blocks/palettes.toml")?)?;
-        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], palettes: pal.palettes };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], palettes: pal.palettes };
         let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| Some(e.ok()?.path())).collect();
         paths.sort();
         for path in paths {
@@ -148,16 +162,31 @@ impl Blocks {
         Ok([Self::get(&self.motion, &g.motion)?, Self::get(&self.emitter, &g.emitter)?, Self::get(&self.colour, &g.colour)?])
     }
 
+    fn opt<'a>(list: &'a [Block], id: &str) -> Result<Option<&'a Block>> {
+        if id.is_empty() {
+            Ok(None)
+        } else {
+            Self::get(list, id).map(Some)
+        }
+    }
+
+    /// The layer blocks ("" = none), or an error naming an unknown id (AI output goes through this).
+    pub fn layer_parts(&self, g: &Genome) -> Result<[Option<&Block>; 2]> {
+        Ok([Self::opt(&self.backdrop, &g.backdrop)?, Self::opt(&self.overlay, &g.overlay)?])
+    }
+
     /// The blocks of `kind`.
     pub fn list(&self, kind: &str) -> Result<&Vec<Block>> {
-        Ok([&self.motion, &self.emitter, &self.colour][kind_index(kind)?])
+        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay][kind_index(kind)?])
     }
 
     fn list_mut(&mut self, kind: &str) -> Result<&mut Vec<Block>> {
         Ok(match kind_index(kind)? {
             0 => &mut self.motion,
             1 => &mut self.emitter,
-            _ => &mut self.colour,
+            2 => &mut self.colour,
+            3 => &mut self.backdrop,
+            _ => &mut self.overlay,
         })
     }
 
@@ -183,12 +212,19 @@ impl Blocks {
                 palettes.push(g.palette.clone());
             }
         }
-        Blocks { motion: pick(&self.motion, |g| &g.motion), emitter: pick(&self.emitter, |g| &g.emitter), colour: pick(&self.colour, |g| &g.colour), palettes }
+        Blocks {
+            motion: pick(&self.motion, |g| &g.motion),
+            emitter: pick(&self.emitter, |g| &g.emitter),
+            colour: pick(&self.colour, |g| &g.colour),
+            backdrop: pick(&self.backdrop, |g| &g.backdrop),
+            overlay: pick(&self.overlay, |g| &g.overlay),
+            palettes,
+        }
     }
 
     /// The range of param `key` (see `param_key`).
     fn param(&self, key: &str) -> Option<&ParamRange> {
-        let all = [&self.motion, &self.emitter, &self.colour].into_iter().flatten();
+        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay].into_iter().flatten();
         all.flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty() && param_key(&b.id, &p.name) == key)).next()
     }
 }
@@ -197,6 +233,7 @@ const TEMPLATE: &str = r#"
 fn MP(i: i32) -> f32 { return P(i); }
 fn EP(i: i32) -> f32 { return P(3 + i); }
 fn CP(i: i32) -> f32 { return P(6 + i); }
+{IMG}
 {MOTION}
 {EMITTER}
 {COLOUR}
@@ -210,26 +247,75 @@ fn scene(uv: vec2<f32>) -> vec4<f32> {
 }
 "#;
 
+/// A look's layer pass: an ordinary scene whose prev() is the finished feedback (engine compose pass).
+const LAYERS: &str = r#"
+fn BP(i: i32) -> f32 { return P(8 + i); }
+fn OP(i: i32) -> f32 { return P(12 + i); }
+{IMG}
+{FONT}
+{BACKDROP}
+{OVERLAY}
+fn scene(uv: vec2<f32>) -> vec4<f32> {
+    let p = to_centered(uv);
+    var c = backdrop(p) + prev(uv) * {FEEDBACK};
+    let o = overlay(p);
+    c = mix(c, o.rgb, clamp(o.a, 0.0, 1.0));
+    return vec4<f32>(c, 1.0);
+}
+"#;
+const NO_BACKDROP: &str = "fn backdrop(p: vec2<f32>) -> vec3<f32> { return vec3<f32>(0.0); }";
+const NO_OVERLAY: &str = "fn overlay(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0); }";
+
+fn img_wgsl(g: &Genome) -> String {
+    let i = g.plate.map_or(-1, |i| i as i64);
+    format!("// The look's picture (prelude plate()); transparent when it has none.\nfn img(p: vec2<f32>) -> vec4<f32> {{ return plate({i}, p); }}")
+}
+
 /// Scene body (prelude is prepended by scenes::shader_source as for any scene).
 pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
     let [m, e, c] = blocks.parts(g)?;
-    Ok(TEMPLATE.replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl))
+    Ok(TEMPLATE.replace("{IMG}", &img_wgsl(g)).replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl))
 }
 
-/// In-memory Scene for a genome: 8 param slots (each block's params padded to its slot count)
+/// Layer pass source (None when the genome has no layer blocks).
+pub fn layers_wgsl(g: &Genome, blocks: &Blocks) -> Result<Option<String>> {
+    if !g.has_layers() {
+        return Ok(None);
+    }
+    let [bd, ov] = blocks.layer_parts(g)?;
+    let fb = g.feedback.unwrap_or(1.0).clamp(0.0, 1.5);
+    Ok(Some(
+        LAYERS
+            .replace("{IMG}", &img_wgsl(g))
+            .replace("{FONT}", &crate::font::wgsl(&g.text))
+            .replace("{BACKDROP}", bd.map_or(NO_BACKDROP, |b| &b.wgsl))
+            .replace("{OVERLAY}", ov.map_or(NO_OVERLAY, |b| &b.wgsl))
+            .replace("{FEEDBACK}", &format!("{fb:?}")),
+    ))
+}
+
+/// In-memory Scene for a genome: 8 param slots, 14 with layers (each block's params padded to its slot count)
 /// and the genome's palette. `wgsl_path` = <gen_dir>/<id>.wgsl (written by `write`).
 /// A tuned value (`g.params`) narrows its range to value ± 15% of the width (fixed: exactly value).
 pub fn to_scene(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     let pad = ParamRange { name: String::new(), min: 0.0, max: 0.0, fixed: true };
-    let mut params = Vec::with_capacity(8);
-    for (b, n) in blocks.parts(g)?.iter().zip(SLOTS) {
-        for p in &b.params {
-            params.push(match (!p.name.is_empty()).then(|| param_key(&b.id, &p.name)).and_then(|k| g.params.get(&k)) {
+    let [m, e, c] = blocks.parts(g)?;
+    let [bd, ov] = blocks.layer_parts(g)?;
+    let mut slots = vec![(Some(m), SLOTS[0]), (Some(e), SLOTS[1]), (Some(c), SLOTS[2])];
+    if g.has_layers() {
+        slots.extend([(bd, SLOTS[3]), (ov, SLOTS[4])]);
+    }
+    let mut params = Vec::with_capacity(crate::types::MAX_PARAMS);
+    for (b, n) in slots {
+        let own = b.map_or(0, |b| b.params.len());
+        for p in b.iter().flat_map(|b| &b.params) {
+            let key = b.filter(|_| !p.name.is_empty()).map(|b| param_key(&b.id, &p.name));
+            params.push(match key.and_then(|k| g.params.get(&k)) {
                 Some(&v) => narrow(p, v),
                 None => p.clone(),
             });
         }
-        params.extend(std::iter::repeat_n(pad.clone(), n - b.params.len()));
+        params.extend(std::iter::repeat_n(pad.clone(), n - own));
     }
     let palette = crate::scenes::palette(&g.palette)?;
     Ok(Scene { id: g.id(), params, palettes: vec![palette], wgsl_path: gen_dir.join(format!("{}.wgsl", g.id())) })
@@ -251,6 +337,13 @@ pub fn write(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     let sc = to_scene(g, blocks, gen_dir)?;
     std::fs::create_dir_all(gen_dir)?;
     std::fs::write(&sc.wgsl_path, wgsl(g, blocks)?)?;
+    let lp = crate::scenes::layers_path(&sc);
+    match layers_wgsl(g, blocks)? {
+        Some(src) => std::fs::write(lp, src)?,
+        None => {
+            let _ = std::fs::remove_file(lp);
+        }
+    }
     Ok(sc)
 }
 
@@ -299,6 +392,28 @@ pub fn random(blocks: &Blocks, r: u64) -> Genome {
         params: BTreeMap::new(),
         ..Default::default()
     }
+}
+
+/// Core --layers: gives a look a backdrop (one showing a picture only when there are plates), an overlay
+/// half the time (text overlays only when there is text), a plate and the text. `r` = 64-bit hash.
+pub fn dress(g: &Genome, blocks: &Blocks, r: u64, plates: usize, text: &str) -> Genome {
+    // ponytail: needs are sniffed from the block source; a toml flag if a block ever calls them indirectly.
+    let backs: Vec<&Block> = blocks.backdrop.iter().filter(|b| plates > 0 || !b.wgsl.contains("img(")).collect();
+    let overs: Vec<&Block> = blocks.overlay.iter().filter(|b| !text.is_empty() || !b.wgsl.contains("text_px(")).collect();
+    let piece = |k: u32| ((r >> (16 * k)) & 0xffff) as usize;
+    let mut out = g.clone();
+    if let Some(b) = backs.get(piece(0) % backs.len().max(1)) {
+        out.backdrop = b.id.clone();
+    }
+    if piece(1) % 2 == 0 {
+        if let Some(b) = overs.get(piece(2) % overs.len().max(1)) {
+            out.overlay = b.id.clone();
+        }
+    }
+    out.plate = (plates > 0).then(|| (piece(3) % plates) as u32);
+    out.text = text.into();
+    out.feedback = Some(0.7);
+    out
 }
 
 fn nth_id(list: &[Block], i: usize) -> String {
@@ -356,5 +471,23 @@ mod tests {
         assert_eq!(s.colour.len(), 2);
         assert_eq!(s.palettes.len(), 1);
         assert_eq!(b.subset(&[]).motion.len(), b.motion.len());
+    }
+
+    #[test]
+    fn layers_add_slots_and_a_layer_pass() {
+        let b = blocks();
+        let plain = genome();
+        assert!(layers_wgsl(&plain, &b).unwrap().is_none());
+        assert_eq!(to_scene(&plain, &b, Path::new(".")).unwrap().params.len(), 8);
+        let g = Genome { backdrop: "back_sky".into(), overlay: "over_hud".into(), plate: Some(1), feedback: Some(0.6), ..genome() };
+        assert_eq!(to_scene(&g, &b, Path::new(".")).unwrap().params.len(), 14);
+        let src = layers_wgsl(&g, &b).unwrap().unwrap();
+        assert!(src.contains("fn backdrop") && src.contains("fn overlay") && src.contains("plate(1, p)") && src.contains("prev(uv) * 0.6"));
+        assert!(b.layer_parts(&Genome { backdrop: "nope".into(), ..genome() }).is_err());
+        // Without plates, dress never picks a backdrop that needs a picture.
+        for r in 0..16u64 {
+            let d = dress(&plain, &b, r * 0x0001_0001_0001_0001, 0, "");
+            assert!(d.plate.is_none() && !b.backdrop.iter().find(|x| x.id == d.backdrop).unwrap().wgsl.contains("img("));
+        }
     }
 }
