@@ -14,6 +14,7 @@
 - [Preview window](#preview-window---dev)
 - [Writing scenes](#writing-scenes)
 - [Generated scenes](#generated-scenes---generated---keep)
+- [Motion graphics](#motion-graphics---layers---image---look)
 - [AI features](#ai-features---setup-ai---vibe---forget-ai)
 - [Writing scenes with --author](#writing-scenes-with---author)
 - [Scene blocks](#scene-blocks)
@@ -505,6 +506,29 @@ visualiser.exe set.flac --keep 3
 The scene is written to `scenes\gen_<id>.wgsl` and `.toml`. After that it is a normal hand-editable scene (see [Writing scenes](#writing-scenes)) you can use with `--scene`, `@scene_id` or in the plan.
 
 **Known limit:** scoring runs on your GPU, so a different GPU may pick a different scene when it plans again. A saved plan always renders the same.
+
+---
+
+## Motion graphics: `--layers`, `--image`, `--look`
+
+Layers put motion graphics on top of the generated scenes' feedback visuals. Everything is built in: no AI, no key, no download.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--layers` | flag | off | Dresses generated scenes with a **backdrop**: `back_sky` (gradient sky), `back_sea` (raymarched sea world) or `back_plate` / `back_sprite` (show your `--image`). Some also get an **overlay**: `over_hud` (rings), `over_grid` (retro grid) or `over_title` (pixel text). Adds a new shot on each drop (a flash) and each build-up (a morph), snapped to phrases. Turns generated scenes on (share `1`) if `--generated` would be `0`. |
+| `--image <FILE>` | png or jpeg path | none | A picture the backdrops can show. Repeatable, up to 8; extra ones are dropped with a warning. Only used with `--layers` (a warning says so otherwise). Each picture is centre-cropped and fitted to 3:2 (1536x1024). An unreadable file stays blank, with a warning. |
+| `--look <LOOK>` | `clean`, `vhs`, `crt`, `mono` | none (same as `clean`) | Finishing look for the whole video: VHS wobble and colour bleed, CRT scanlines, or a mono tint. |
+
+- `--look` is a render setting like `--no-grain`: set it on every run, it is not saved in the plan or reused.
+- `--layers` and the `--image` list are part of the plan: changing either makes a new plan. A plain re-run with the same ones reuses the saved plan.
+- Without these flags nothing changes: the default render is the same as before.
+- `--keep N` exports a layered look too: `scenes\gen_<id>.layers.wgsl` is copied next to the `.wgsl` and `.toml`.
+
+```
+visualiser.exe song.wav --replan --layers --preview 1:00 --quality draft
+visualiser.exe song.wav --replan --layers --image clouds.jpg --look vhs --preview 1:00 --quality draft
+visualiser.exe song.wav --replan --layers --look mono --preview 1:00 --quality draft
+```
 
 ---
 
