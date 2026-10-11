@@ -1,13 +1,13 @@
 //! Generated scenes: a genome picks one motion, emitter and colour block (scenes/blocks/) plus a
 //! palette, and compiles to an ordinary scene (.wgsl), so engine/preview/render are unchanged.
 use crate::scenes::{ParamRange, Scene};
-use crate::types::fnv1a;
+use crate::types::{fnv1a, Post};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Genome {
     pub motion: String,
     pub emitter: String,
@@ -17,6 +17,23 @@ pub struct Genome {
     /// Tuned param values, key "<block_id>.<param_name>", in the param's own units.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f32>,
+    /// Layer blocks ("" = none), drawn behind / over the feedback in a separate pass (`layers_wgsl`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub backdrop: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub overlay: String,
+    /// Plan plate index `img()` shows; None = no picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate: Option<u32>,
+    /// Feedback strength over the backdrop (layer looks), 0..1.5; None = 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<f32>,
+    /// Text for overlay blocks that draw it (font.rs charset; anything else becomes a space).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    /// Finishing look.
+    #[serde(default, skip_serializing_if = "Post::is_clean")]
+    pub post: Post,
 }
 
 impl Genome {
@@ -30,14 +47,25 @@ impl Genome {
         Ok(match kind_index(kind)? {
             0 => &mut self.motion,
             1 => &mut self.emitter,
-            _ => &mut self.colour,
+            2 => &mut self.colour,
+            3 => &mut self.backdrop,
+            _ => &mut self.overlay,
         })
     }
 
-    /// Keeps only finite tuned values whose key names a param of this genome's three blocks.
+    /// Has a backdrop or overlay (so it also has a layer pass).
+    pub fn has_layers(&self) -> bool {
+        !self.backdrop.is_empty() || !self.overlay.is_empty()
+    }
+
+    /// Keeps only finite tuned values whose key names a param of this genome's blocks.
     pub fn prune(&mut self, blocks: &Blocks) {
-        let Ok(parts) = blocks.parts(self) else { return self.params.clear() };
-        let keys: Vec<String> = parts.iter().flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name))).collect();
+        let (Ok(parts), Ok(layers)) = (blocks.parts(self), blocks.layer_parts(self)) else { return self.params.clear() };
+        let keys: Vec<String> = parts
+            .into_iter()
+            .chain(layers.into_iter().flatten())
+            .flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name)))
+            .collect();
         self.params.retain(|k, v| keys.contains(k) && v.is_finite());
     }
 }
@@ -61,6 +89,9 @@ pub struct Blocks {
     pub motion: Vec<Block>,
     pub emitter: Vec<Block>,
     pub colour: Vec<Block>,
+    /// Layer blocks (optional kinds).
+    pub backdrop: Vec<Block>,
+    pub overlay: Vec<Block>,
     /// Palette bank, sRGB hex.
     pub palettes: Vec<[String; 4]>,
 }
@@ -72,11 +103,11 @@ struct BlockToml {
     params: Vec<ParamRange>,
 }
 
-/// Block kinds; `SLOTS` and the `Blocks` lists follow this order.
-pub const KINDS: [&str; 3] = ["motion", "emitter", "colour"];
+/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last two (layers) are optional.
+pub const KINDS: [&str; 5] = ["motion", "emitter", "colour", "backdrop", "overlay"];
 
-/// Param slots per kind (8 total, the scene uniform limit).
-const SLOTS: [usize; 3] = [3, 3, 2];
+/// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13).
+const SLOTS: [usize; 5] = [3, 3, 2, 4, 2];
 
 fn kind_index(kind: &str) -> Result<usize> {
     KINDS.iter().position(|k| *k == kind).with_context(|| format!("unknown kind {kind}"))
@@ -103,7 +134,7 @@ impl Blocks {
             palettes: Vec<[String; 4]>,
         }
         let pal: Pal = toml::from_str(&std::fs::read_to_string(dir.join("palettes.toml")).context("blocks/palettes.toml")?)?;
-        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], palettes: pal.palettes };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], palettes: pal.palettes };
         let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| Some(e.ok()?.path())).collect();
         paths.sort();
         for path in paths {
@@ -131,16 +162,31 @@ impl Blocks {
         Ok([Self::get(&self.motion, &g.motion)?, Self::get(&self.emitter, &g.emitter)?, Self::get(&self.colour, &g.colour)?])
     }
 
+    fn opt<'a>(list: &'a [Block], id: &str) -> Result<Option<&'a Block>> {
+        if id.is_empty() {
+            Ok(None)
+        } else {
+            Self::get(list, id).map(Some)
+        }
+    }
+
+    /// The layer blocks ("" = none), or an error naming an unknown id (AI output goes through this).
+    pub fn layer_parts(&self, g: &Genome) -> Result<[Option<&Block>; 2]> {
+        Ok([Self::opt(&self.backdrop, &g.backdrop)?, Self::opt(&self.overlay, &g.overlay)?])
+    }
+
     /// The blocks of `kind`.
     pub fn list(&self, kind: &str) -> Result<&Vec<Block>> {
-        Ok([&self.motion, &self.emitter, &self.colour][kind_index(kind)?])
+        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay][kind_index(kind)?])
     }
 
     fn list_mut(&mut self, kind: &str) -> Result<&mut Vec<Block>> {
         Ok(match kind_index(kind)? {
             0 => &mut self.motion,
             1 => &mut self.emitter,
-            _ => &mut self.colour,
+            2 => &mut self.colour,
+            3 => &mut self.backdrop,
+            _ => &mut self.overlay,
         })
     }
 
@@ -166,12 +212,19 @@ impl Blocks {
                 palettes.push(g.palette.clone());
             }
         }
-        Blocks { motion: pick(&self.motion, |g| &g.motion), emitter: pick(&self.emitter, |g| &g.emitter), colour: pick(&self.colour, |g| &g.colour), palettes }
+        Blocks {
+            motion: pick(&self.motion, |g| &g.motion),
+            emitter: pick(&self.emitter, |g| &g.emitter),
+            colour: pick(&self.colour, |g| &g.colour),
+            backdrop: pick(&self.backdrop, |g| &g.backdrop),
+            overlay: pick(&self.overlay, |g| &g.overlay),
+            palettes,
+        }
     }
 
     /// The range of param `key` (see `param_key`).
     fn param(&self, key: &str) -> Option<&ParamRange> {
-        let all = [&self.motion, &self.emitter, &self.colour].into_iter().flatten();
+        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay].into_iter().flatten();
         all.flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty() && param_key(&b.id, &p.name) == key)).next()
     }
 }
@@ -180,6 +233,7 @@ const TEMPLATE: &str = r#"
 fn MP(i: i32) -> f32 { return P(i); }
 fn EP(i: i32) -> f32 { return P(3 + i); }
 fn CP(i: i32) -> f32 { return P(6 + i); }
+{IMG}
 {MOTION}
 {EMITTER}
 {COLOUR}
@@ -193,26 +247,75 @@ fn scene(uv: vec2<f32>) -> vec4<f32> {
 }
 "#;
 
+/// A look's layer pass: an ordinary scene whose prev() is the finished feedback (engine compose pass).
+const LAYERS: &str = r#"
+fn BP(i: i32) -> f32 { return P(8 + i); }
+fn OP(i: i32) -> f32 { return P(12 + i); }
+{IMG}
+{FONT}
+{BACKDROP}
+{OVERLAY}
+fn scene(uv: vec2<f32>) -> vec4<f32> {
+    let p = to_centered(uv);
+    var c = backdrop(p) + prev(uv) * {FEEDBACK};
+    let o = overlay(p);
+    c = mix(c, o.rgb, clamp(o.a, 0.0, 1.0));
+    return vec4<f32>(c, 1.0);
+}
+"#;
+const NO_BACKDROP: &str = "fn backdrop(p: vec2<f32>) -> vec3<f32> { return vec3<f32>(0.0); }";
+const NO_OVERLAY: &str = "fn overlay(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0); }";
+
+fn img_wgsl(g: &Genome) -> String {
+    let i = g.plate.map_or(-1, |i| i as i64);
+    format!("// The look's picture (prelude plate()); transparent when it has none.\nfn img(p: vec2<f32>) -> vec4<f32> {{ return plate({i}, p); }}")
+}
+
 /// Scene body (prelude is prepended by scenes::shader_source as for any scene).
 pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
     let [m, e, c] = blocks.parts(g)?;
-    Ok(TEMPLATE.replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl))
+    Ok(TEMPLATE.replace("{IMG}", &img_wgsl(g)).replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl))
 }
 
-/// In-memory Scene for a genome: 8 param slots (each block's params padded to its slot count)
+/// Layer pass source (None when the genome has no layer blocks).
+pub fn layers_wgsl(g: &Genome, blocks: &Blocks) -> Result<Option<String>> {
+    if !g.has_layers() {
+        return Ok(None);
+    }
+    let [bd, ov] = blocks.layer_parts(g)?;
+    let fb = g.feedback.unwrap_or(1.0).clamp(0.0, 1.5);
+    Ok(Some(
+        LAYERS
+            .replace("{IMG}", &img_wgsl(g))
+            .replace("{FONT}", &crate::font::wgsl(&g.text))
+            .replace("{BACKDROP}", bd.map_or(NO_BACKDROP, |b| &b.wgsl))
+            .replace("{OVERLAY}", ov.map_or(NO_OVERLAY, |b| &b.wgsl))
+            .replace("{FEEDBACK}", &format!("{fb:?}")),
+    ))
+}
+
+/// In-memory Scene for a genome: 8 param slots, 14 with layers (each block's params padded to its slot count)
 /// and the genome's palette. `wgsl_path` = <gen_dir>/<id>.wgsl (written by `write`).
 /// A tuned value (`g.params`) narrows its range to value ± 15% of the width (fixed: exactly value).
 pub fn to_scene(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     let pad = ParamRange { name: String::new(), min: 0.0, max: 0.0, fixed: true };
-    let mut params = Vec::with_capacity(8);
-    for (b, n) in blocks.parts(g)?.iter().zip(SLOTS) {
-        for p in &b.params {
-            params.push(match (!p.name.is_empty()).then(|| param_key(&b.id, &p.name)).and_then(|k| g.params.get(&k)) {
+    let [m, e, c] = blocks.parts(g)?;
+    let [bd, ov] = blocks.layer_parts(g)?;
+    let mut slots = vec![(Some(m), SLOTS[0]), (Some(e), SLOTS[1]), (Some(c), SLOTS[2])];
+    if g.has_layers() {
+        slots.extend([(bd, SLOTS[3]), (ov, SLOTS[4])]);
+    }
+    let mut params = Vec::with_capacity(crate::types::MAX_PARAMS);
+    for (b, n) in slots {
+        let own = b.map_or(0, |b| b.params.len());
+        for p in b.iter().flat_map(|b| &b.params) {
+            let key = b.filter(|_| !p.name.is_empty()).map(|b| param_key(&b.id, &p.name));
+            params.push(match key.and_then(|k| g.params.get(&k)) {
                 Some(&v) => narrow(p, v),
                 None => p.clone(),
             });
         }
-        params.extend(std::iter::repeat_n(pad.clone(), n - b.params.len()));
+        params.extend(std::iter::repeat_n(pad.clone(), n - own));
     }
     let palette = crate::scenes::palette(&g.palette)?;
     Ok(Scene { id: g.id(), params, palettes: vec![palette], wgsl_path: gen_dir.join(format!("{}.wgsl", g.id())) })
@@ -234,6 +337,13 @@ pub fn write(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     let sc = to_scene(g, blocks, gen_dir)?;
     std::fs::create_dir_all(gen_dir)?;
     std::fs::write(&sc.wgsl_path, wgsl(g, blocks)?)?;
+    let lp = crate::scenes::layers_path(&sc);
+    match layers_wgsl(g, blocks)? {
+        Some(src) => std::fs::write(lp, src)?,
+        None => {
+            let _ = std::fs::remove_file(lp);
+        }
+    }
     Ok(sc)
 }
 
@@ -250,8 +360,15 @@ pub fn export(g: &Genome, blocks: &Blocks, scenes_dir: &Path) -> Result<String> 
 }
 
 /// One random change: swap motion, emitter or colour, take another palette, or (when the
-/// genome has tuned params) nudge one tuned value by ±15% of its range.
+/// genome has tuned params) nudge one tuned value by ±15% of its range. A third of the time
+/// (chosen by `r`) it jumps instead: two changes at once, a param re-drawn across its whole range.
 pub fn mutate(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
+    let big = crate::types::mix64(r).is_multiple_of(3);
+    let out = mutate_once(g, blocks, r, big);
+    if big { mutate_once(&out, blocks, crate::types::mix64(r ^ 1), true) } else { out }
+}
+
+fn mutate_once(g: &Genome, blocks: &Blocks, r: u64, big: bool) -> Genome {
     let mut out = g.clone();
     let i = (r & 0xffff_ffff) as usize;
     match (r >> 32) % if g.params.is_empty() { 4 } else { 5 } {
@@ -262,7 +379,11 @@ pub fn mutate(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
         _ => {
             let (key, v) = out.params.iter_mut().nth(i % g.params.len()).unwrap();
             if let Some(p) = blocks.param(key) {
-                *v = p.nudge(*v, if i & 0x8000_0000 == 0 { 0.15 } else { -0.15 });
+                *v = if big {
+                    p.nudge(p.min.min(p.max), ((i >> 8) & 0xffff) as f32 / 65535.0)
+                } else {
+                    p.nudge(*v, if i & 0x8000_0000 == 0 { 0.15 } else { -0.15 })
+                };
             }
         }
     }
@@ -271,16 +392,42 @@ pub fn mutate(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     out
 }
 
+/// 16-bit slice `k` of the hash `r`.
+fn piece(r: u64, k: u32) -> usize {
+    ((r >> (16 * k)) & 0xffff) as usize
+}
+
 /// Uniform random genome from `r` (a 64-bit hash; consumed in 16-bit pieces).
 pub fn random(blocks: &Blocks, r: u64) -> Genome {
-    let piece = |k: u32| ((r >> (16 * k)) & 0xffff) as usize;
     Genome {
-        motion: nth_id(&blocks.motion, piece(0)),
-        emitter: nth_id(&blocks.emitter, piece(1)),
-        colour: nth_id(&blocks.colour, piece(2)),
-        palette: blocks.palettes[piece(3) % blocks.palettes.len()].clone(),
+        motion: nth_id(&blocks.motion, piece(r, 0)),
+        emitter: nth_id(&blocks.emitter, piece(r, 1)),
+        colour: nth_id(&blocks.colour, piece(r, 2)),
+        palette: blocks.palettes[piece(r, 3) % blocks.palettes.len()].clone(),
         params: BTreeMap::new(),
+        ..Default::default()
     }
+}
+
+/// Core --layers: gives a look a backdrop (one showing a picture only when there are plates), an overlay
+/// half the time (text overlays only when there is text), a plate and the text. `r` = 64-bit hash.
+pub fn dress(g: &Genome, blocks: &Blocks, r: u64, plates: usize, text: &str) -> Genome {
+    // ponytail: needs are sniffed from the block source; a toml flag if a block ever calls them indirectly.
+    let backs: Vec<&Block> = blocks.backdrop.iter().filter(|b| plates > 0 || !b.wgsl.contains("img(")).collect();
+    let overs: Vec<&Block> = blocks.overlay.iter().filter(|b| !text.is_empty() || !b.wgsl.contains("text_px(")).collect();
+    let mut out = g.clone();
+    if let Some(b) = backs.get(piece(r, 0) % backs.len().max(1)) {
+        out.backdrop = b.id.clone();
+    }
+    if piece(r, 1) % 2 == 0 {
+        if let Some(b) = overs.get(piece(r, 2) % overs.len().max(1)) {
+            out.overlay = b.id.clone();
+        }
+    }
+    out.plate = (plates > 0).then(|| (piece(r, 3) % plates) as u32);
+    out.text = text.into();
+    out.feedback = Some(0.7);
+    out
 }
 
 fn nth_id(list: &[Block], i: usize) -> String {
@@ -297,7 +444,7 @@ mod tests {
 
     fn genome() -> Genome {
         let pal = ["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()];
-        Genome { motion: "motion_ink".into(), emitter: "emit_rings".into(), colour: "colour_hue".into(), palette: pal, params: BTreeMap::new() }
+        Genome { motion: "motion_ink".into(), emitter: "emit_rings".into(), colour: "colour_hue".into(), palette: pal, params: BTreeMap::new(), ..Default::default() }
     }
 
     #[test]
@@ -321,10 +468,10 @@ mod tests {
         assert!((s.min - 0.0084).abs() < 1e-6 && (s.max - 0.009).abs() < 1e-6, "{s:?}");
         assert_eq!((sc.params[6].min, sc.params[6].max), (0.3, 0.3));
         assert_eq!((sc.params[0].min, sc.params[0].max), (1.2, 2.4)); // untouched
-        // mutate's 5th case keeps tuned values inside their range.
+        // mutate's 5th case keeps tuned values inside their range (a big jump may swap the block away).
         for r in 0..64u64 {
             let m = mutate(&g, &b, (4 << 32) | (r * 0x0400_0001));
-            assert!((0.005..=0.009).contains(&m.params["motion_ink.current_speed"]));
+            assert!(m.params.get("motion_ink.current_speed").is_none_or(|v| (0.005..=0.009).contains(v)));
         }
     }
 
@@ -338,5 +485,23 @@ mod tests {
         assert_eq!(s.colour.len(), 2);
         assert_eq!(s.palettes.len(), 1);
         assert_eq!(b.subset(&[]).motion.len(), b.motion.len());
+    }
+
+    #[test]
+    fn layers_add_slots_and_a_layer_pass() {
+        let b = blocks();
+        let plain = genome();
+        assert!(layers_wgsl(&plain, &b).unwrap().is_none());
+        assert_eq!(to_scene(&plain, &b, Path::new(".")).unwrap().params.len(), 8);
+        let g = Genome { backdrop: "back_sky".into(), overlay: "over_hud".into(), plate: Some(1), feedback: Some(0.6), ..genome() };
+        assert_eq!(to_scene(&g, &b, Path::new(".")).unwrap().params.len(), 14);
+        let src = layers_wgsl(&g, &b).unwrap().unwrap();
+        assert!(src.contains("fn backdrop") && src.contains("fn overlay") && src.contains("plate(1, p)") && src.contains("prev(uv) * 0.6"));
+        assert!(b.layer_parts(&Genome { backdrop: "nope".into(), ..genome() }).is_err());
+        // Without plates, dress never picks a backdrop that needs a picture.
+        for r in 0..16u64 {
+            let d = dress(&plain, &b, r * 0x0001_0001_0001_0001, 0, "");
+            assert!(d.plate.is_none() && !b.backdrop.iter().find(|x| x.id == d.backdrop).unwrap().wgsl.contains("img("));
+        }
     }
 }

@@ -93,7 +93,8 @@ impl Judge {
         let instance = wgpu::Instance::default();
         let (_adapter, device, queue) = engine::gpu(&instance, cpu, None)?;
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let engine = Engine::new(&device, &queue, scenes, scenes_dir, Quality::Draft, W, H, format);
+        let mut engine = Engine::new(&device, &queue, scenes, scenes_dir, Quality::Draft, W, H, format, &[]);
+        engine.layers = false; // Backdrops are art, not music: score the feedback only (layer passes still compile).
         let out_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("judge"),
             size: wgpu::Extent3d { width: W, height: H, depth_or_array_layers: 1 },
@@ -133,6 +134,14 @@ impl Judge {
         Ok(())
     }
 
+    /// `audition` with the layer pass drawn: for new backdrop/overlay blocks, which normal judging never draws.
+    pub fn audition_layered(&mut self, scene: Scene, analysis: &Analysis) -> Result<()> {
+        self.engine.layers = true;
+        let r = self.audition(scene, analysis);
+        self.engine.layers = false;
+        r
+    }
+
     fn score(&mut self, scene: Scene, analysis: &Analysis, t0: f64, secs: f64) -> Result<Option<f32>> {
         let id = scene.id.clone();
         let mid: Vec<f32> = scene.params.iter().map(|p| (p.min + p.max) / 2.0).collect();
@@ -146,6 +155,9 @@ impl Judge {
             mode: Mode::Single,
             generated: 0.0,
             vibe: None,
+            plates: vec![],
+            post: None,
+            layers: false,
             segments: vec![Segment {
                 start: 0.0,
                 end: analysis.duration,

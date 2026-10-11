@@ -1,0 +1,10 @@
+kind = "overlay"
+description = "Retro perspective floor grid (90s CGI / synthwave) scrolling towards the viewer one cell per beat, fading into the horizon"
+[[param]]
+name = "horizon"
+min = -0.4
+max = 0.0
+[[param]]
+name = "opacity"
+min = 0.3
+max = 1.0

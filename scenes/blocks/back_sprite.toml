@@ -1,0 +1,14 @@
+kind = "backdrop"
+description = "The look's picture as a cut-out on a slowly turning, tilted translucent card floating in dark space (hologram); best with transparent images"
+[[param]]
+name = "turn"
+min = 0.0
+max = 0.6
+[[param]]
+name = "tilt"
+min = -0.5
+max = 0.5
+[[param]]
+name = "size"
+min = 0.5
+max = 1.0

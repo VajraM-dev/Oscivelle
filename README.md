@@ -14,6 +14,8 @@ Turns a long audio file (DJ mix or production) into an MP4 with music-aware, Mil
 
 **Generated scenes:** `--generated <0..1>` makes some scenes from a menu of motion, emitter and colour blocks, each scored on its segment's music. `--keep N` copies one into `scenes/`.
 
+**Motion graphics:** `--layers` adds backdrops (sky, raymarched sea, your `--image` pictures), HUD/grid/text overlays and a new shot at each drop; `--look clean|vhs|crt|mono` finishes the whole video. Off by default. Details: [docs/USAGE.md](docs/USAGE.md#motion-graphics---layers---image---look).
+
 **AI vibe (optional, bring your own OpenAI-compatible API: OpenAI, OpenRouter, Ollama, ...):** `visualiser --setup-ai`, then `--vibe "dark and liquid"` steers the generated scenes. Never required, never fails a render. Details: [docs/AI.md](docs/AI.md).
 
 **Dev:** `--author "<description>"` has the AI write a new hand-editable scene into `scenes/`; audition it with `--dev --scene <id>`.

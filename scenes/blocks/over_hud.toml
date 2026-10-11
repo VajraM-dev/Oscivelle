@@ -1,0 +1,10 @@
+kind = "overlay"
+description = "Sci-fi HUD: a turning dashed ring, a ring of tick marks (every third long), corner brackets; flares on kicks"
+[[param]]
+name = "scale"
+min = 0.6
+max = 0.85
+[[param]]
+name = "tint"
+min = 0.0
+max = 1.0

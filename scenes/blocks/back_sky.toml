@@ -1,0 +1,14 @@
+kind = "backdrop"
+description = "Gradient sky over a horizon with a soft sun, haze bands and a mirrored lower half (calm, open, 90s CGI)"
+[[param]]
+name = "horizon"
+min = -0.6
+max = 0.1
+[[param]]
+name = "sun_x"
+min = -1.2
+max = 1.2
+[[param]]
+name = "sun_height"
+min = 0.1
+max = 0.8

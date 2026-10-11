@@ -1,0 +1,18 @@
+kind = "backdrop"
+description = "Raymarched 90s-CGI world: calm reflective sea, a pyramid standing in it, a marbled moon sphere, gradient sky, long shadow"
+[[param]]
+name = "eye_height"
+min = 0.6
+max = 2.0
+[[param]]
+name = "sun_x"
+min = -1.5
+max = 1.5
+[[param]]
+name = "sway"
+min = 0.0
+max = 1.0
+[[param]]
+name = "waves"
+min = 0.02
+max = 0.12

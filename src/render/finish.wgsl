@@ -6,6 +6,8 @@ struct F {
     r: vec4<f32>,  // output w, h px, output frame index
     d0: vec4<f32>, // kick, energy, tension, bass
     d1: vec4<f32>, // beat phase, bar phase, phrase phase, drop env
+    p0: vec4<f32>, // vhs, scanlines, posterize, tint amount (all 0 = clean)
+    p1: vec4<f32>, // tint rgb (sRGB-encoded on the CPU)
 };
 
 @group(0) @binding(0) var<uniform> f: F;
@@ -88,12 +90,22 @@ fn overlay(c0: vec3<f32>, px: vec2<f32>) -> vec3<f32> {
     return c;
 }
 
+// VHS: slow line-wise horizontal wobble plus a tracking band rolling up the frame with per-line noise.
+fn vhs_uv(uv: vec2<f32>, amt: f32, t: f32, frame: u32) -> vec2<f32> {
+    let wobble = sin(uv.y * 23.0 + t * 1.7) * 0.6 + sin(uv.y * 71.0 - t * 3.1) * 0.4;
+    let band = 1.0 - smoothstep(0.0, 0.04, abs(fract(uv.y + t * 0.05) - 0.5));
+    let line = rnd(vec2<f32>(0.0, floor(uv.y * f.r.y)), frame, 4u) - 0.5;
+    return vec2<f32>(uv.x + amt * (0.0012 * wobble + 0.012 * band * line), uv.y);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let uv = in.uv;
+    let frame = u32(f.r.z);
+    var uv = in.uv;
+    if (f.p0.x > 0.0) { uv = vhs_uv(in.uv, f.p0.x, f.b.x, frame); }
     let p = uv - 0.5;
-    // Gentle chromatic aberration, growing towards the edges.
-    let ca = p * dot(p, p) * 0.012;
+    // Gentle chromatic aberration, growing towards the edges; VHS adds a horizontal chroma bleed.
+    let ca = p * dot(p, p) * 0.012 + vec2<f32>(f.p0.x * 0.004, 0.0);
     // Full supersample filter on green only; the fringed red/blue get a single tap each.
     let r = textureSampleLevel(src, samp, uv + ca, 0.0).r;
     let b = textureSampleLevel(src, samp, uv - ca, 0.0).b;
@@ -104,8 +116,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     c = max(mix(vec3<f32>(l), c, f.a.z), vec3<f32>(0.0));
     c *= 1.0 - 0.45 * smoothstep(0.3, 0.8, length(p * vec2<f32>(1.0, 0.75)) * 1.1);
     c = srgb(tonemap(c));
+    // Looks (finish-pass only; every term is a no-op at 0, so the clean look is unchanged).
+    let lum = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    c = mix(c, lum * f.p1.rgb * 1.4, f.p0.w);
+    if (f.p0.z > 0.0) {
+        let levels = mix(64.0, 4.0, f.p0.z);
+        c = floor(c * levels + 0.5) / levels;
+    }
+    // Scanlines: whole-pixel, pitch 2h px with h = height / 1080 rows dark (one dark row in two at 1080p).
+    if (f.p0.y > 0.0) {
+        let h = max(1.0, round(f.r.y / 1080.0));
+        c *= 1.0 - f.p0.y * 0.35 * (floor(in.pos.y / h) % 2.0);
+    }
 
-    let frame = u32(f.r.z);
     if (f.a.w > 0.0) {
         // Light, fine, monochrome (so 4:2:0 chroma subsampling can't smear it), mostly in the midtones.
         let g = rnd(in.pos.xy, frame, 0u) + rnd(in.pos.xy, frame, 1u) - 1.0;

@@ -28,3 +28,22 @@ fixed = false              # optional, same meaning as in scene tomls
 - React to the kick and drops (`kick()`, `drop_env()`, `since_kick()`), not to every band.
 - `MP/EP/CP` never multiply `time()` (phase jumps when params change). Mark such params `fixed = true`.
 - No `textureSample` other than through `prev()`; no derivatives (`dpdx`, `fwidth`) in motion blocks.
+
+## Layer blocks (optional kinds `backdrop` and `overlay`)
+A look may add one backdrop and/or one overlay. They run in a separate pass once per output frame, after
+the feedback: `rgb = backdrop(p) + feedback * k`, then the overlay is alpha-blended on top. Nothing in this
+pass is fed back, so backdrops and overlays stay crisp while the feedback trails over them.
+- backdrop: `fn backdrop(p: vec2<f32>) -> vec3<f32>`: p = centred coords; linear HDR rgb
+            (sky/world ~0..1, highlights up to ~4 to bloom).
+- overlay:  `fn overlay(p: vec2<f32>) -> vec4<f32>`: rgb (HDR) + alpha coverage 0..1.
+- Ids: `back_<name>` / `over_<name>`. Params: backdrop `BP(0..3)` (≤ 4), overlay `OP(0..1)` (≤ 2).
+- Never call `prev()` in a layer block (in this pass it is the feedback image; the template blends it).
+- No derivatives (`dpdx`, `fwidth`) in layer blocks: get the pixel size from `resolution()`.
+- Raymarching: cap the steps (`select(48, 96, quality() > 0.5)`) and the distance (~40 units).
+- Write `1.0 - smoothstep(a, b, x)` rather than `smoothstep(b, a, x)`.
+
+## Helpers for any block
+- `img(p)`: the look's picture in centred coords (rgba, transparent outside it or when the look has
+  none). Pictures are 3:2: x -1.5..1.5, y -1..1, so scale p (e.g. `p / 1.25`) to cover the 16:9 frame.
+- `text_px(q)` + `TEXT_LEN` (overlay blocks): the look's text in a 5x7 pixel font (A-Z 0-9 . , - ' ! ? : / & +).
+  q in glyph pixels: x from 0 at the left edge, y from 0 at the top row; 6 px per character. Returns 0 or 1.

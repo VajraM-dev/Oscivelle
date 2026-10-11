@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 inquire = "0.9.4"
 keyring = "4.2.0"
 pollster = "1"

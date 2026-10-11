@@ -26,6 +26,8 @@ pub struct PlanRequest<'a> {
     pub blocks: Option<&'a Blocks>,
     /// Where generated scenes' .wgsl files live.
     pub gen_dir: &'a std::path::Path,
+    /// Shot changes inside the music (storyboard / --layers); ignored in markers mode.
+    pub shots: &'a [Shot],
 }
 
 // ---------------------------------------------------------------- rng
@@ -110,11 +112,25 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                 // A detected track change within 2 bars tells us how the music actually changes here.
                 let transition = match a.track_changes.iter().find(|c| (c.time - t).abs() <= 2.0 * bar) {
                     Some(c) => change_transition(c),
-                    None => flash_near_drop(t, Transition { kind: TransitionKind::Morph, duration: 4.0 }),
+                    None => flash_near_drop(t, Transition { kind: TransitionKind::Morph, duration: MORPH_LEN }),
                 };
                 bounds.push(Boundary { start: t, title: m.name.clone(), scene: known(&m.scene), transition });
             }
         }
+    }
+
+    // Shot changes inside the music (storyboard / --layers). Markers mode keeps the user's own cuts.
+    // Flashes (drops) are placed first, so a morph too close to one is the shot that gets dropped.
+    if req.mode != Mode::Markers {
+        let is_flash = |s: &&Shot| s.transition.kind == TransitionKind::Flash;
+        for s in req.shots.iter().filter(is_flash).chain(req.shots.iter().filter(|s| !is_flash(s))) {
+            let t = snap(a, s.time, bar);
+            if t < 8.0 * bar || a.duration - t < 8.0 * bar || bounds.iter().any(|b| (b.start - t).abs() < 8.0 * bar) {
+                continue;
+            }
+            bounds.push(Boundary { start: t, title: None, scene: None, transition: s.transition });
+        }
+        bounds.sort_by(|x, y| x.start.total_cmp(&y.start));
     }
 
     // Locked segments must survive small boundary shifts (re-analysis, marker edits): pull the nearest
@@ -274,7 +290,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
@@ -288,7 +304,7 @@ fn pick(scenes: &[Scene], soft: &[&str], hard: &[&str], r: u64) -> String {
     unreachable!("scenes is non-empty")
 }
 
-fn bar_len(a: &Analysis) -> f64 {
+pub(crate) fn bar_len(a: &Analysis) -> f64 {
     240.0 / if a.bpm > 0.0 { a.bpm } else { 120.0 }
 }
 
@@ -331,9 +347,15 @@ fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single:
     out
 }
 
-/// Scene param j's uniform slot (8 params split over two vec4s).
+/// Scene param j's uniform slot (MAX_PARAMS params split over four vec4s).
 fn param_mut(u: &mut SceneUniforms, j: usize) -> &mut f32 {
-    if j < 4 { &mut u.p0[j] } else { &mut u.p1[j - 4] }
+    let row = match j / 4 {
+        0 => &mut u.p0,
+        1 => &mut u.p1,
+        2 => &mut u.p2,
+        _ => &mut u.p3,
+    };
+    &mut row[j % 4]
 }
 
 const SOURCES: [ModSource; 7] =
@@ -416,7 +438,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         if let Some(cur) = vs.get(v) {
             let prev = &vs[v.saturating_sub(1)];
             let f = smoothstep(((t - cur.time) / bar) as f32);
-            for (j, (x, y)) in prev.params.iter().zip(&cur.params).take(sc.params.len().min(8)).enumerate() {
+            for (j, (x, y)) in prev.params.iter().zip(&cur.params).take(sc.params.len().min(MAX_PARAMS)).enumerate() {
                 let val = lerp(*x, *y, f);
                 *param_mut(&mut u, j) = val;
             }
@@ -436,7 +458,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             ModSource::Drop => base.shape[2],
         };
         for m in &s.mods {
-            // Scenes have ≤ 8 params (checked at load); a hand-edited plan may name a missing or fixed one.
+            // Scenes have ≤ MAX_PARAMS params (checked at load); a hand-edited plan may name a missing or fixed one.
             let Some(p) = sc.params.get(m.param).filter(|p| !p.fixed) else { continue };
             let slot = param_mut(&mut u, m.param);
             *slot = p.nudge(*slot, m.depth * src(m.source));
@@ -451,7 +473,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         (j > 0 && s.transition_in.kind == TransitionKind::Morph && (t - s.start).abs() < dur / 2.0)
             .then(|| (j, smoothstep(((t - (s.start - dur / 2.0)) / dur) as f32)))
     };
-    let (scene_a, ua, b, mix) = match in_morph(i).or_else(|| in_morph(i + 1)) {
+    let morph = in_morph(i).or_else(|| in_morph(i + 1));
+    let (scene_a, ua, b, mix) = match morph {
         Some((j, m)) => {
             let (ida, ua) = build(&segs[j - 1]);
             (ida, ua, Some(build(&segs[j])), m)
@@ -470,6 +493,12 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         .filter(|s| s.transition_in.kind == TransitionKind::Flash && t >= s.start)
         .map_or(0.0, |s| (1.0 - (t - s.start) / 0.4).max(0.0).powi(2));
     let drop_flash = if drop_dt < beat_len { 0.4 * drop_env } else { 0.0 };
+    // Finishing look: --look wins, else the segment's (blended through a morph).
+    let post_of = |s: &Segment| plan.post.or_else(|| s.genome.as_ref().map(|g| g.post)).unwrap_or_default();
+    let post = match morph {
+        Some((j, m)) => post_of(&segs[j - 1]).lerp(&post_of(&segs[j]), m),
+        None => segs.get(i).map(post_of).unwrap_or_default(),
+    };
     FrameState {
         scene_a,
         a: ua,
@@ -478,11 +507,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         flash: (0.06 * kick + trans_flash + drop_flash).clamp(0.0, 1.0) as f32,
         exposure: 1.0 + 0.1 * energy,
         saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2),
+        post,
     }
-}
-
-fn lerp(a: f32, b: f32, f: f32) -> f32 {
-    a + (b - a) * f
 }
 
 fn smoothstep(x: f32) -> f32 {
@@ -491,7 +517,7 @@ fn smoothstep(x: f32) -> f32 {
 }
 
 /// Linear interpolation into a curve sampled at `rate` Hz.
-fn sample(v: &[f32], rate: f64, t: f64) -> f32 {
+pub(crate) fn sample(v: &[f32], rate: f64, t: f64) -> f32 {
     if v.is_empty() || rate <= 0.0 {
         return 0.0;
     }
@@ -605,6 +631,7 @@ mod tests {
             genome_for: None,
             blocks: None,
             gen_dir: Path::new("."),
+            shots: &[],
         };
         let p1 = plan(&req(&[])).unwrap();
         let p2 = plan(&req(&[])).unwrap();
@@ -656,7 +683,7 @@ mod tests {
                 crate::scenes::ParamRange { name: String::new(), min: 2.0, max: 4.0, fixed: false },
             ];
         }
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new(".") };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[] };
         let p = plan(&req).unwrap();
         assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
         let mut flat = p.clone();
@@ -673,6 +700,44 @@ mod tests {
     }
 
     #[test]
+    fn shots_split_a_single_segment() {
+        let a = test_analysis();
+        let scenes = test_scenes();
+        let flash = Transition { kind: TransitionKind::Flash, duration: 0.0 };
+        let morph = Transition { kind: TransitionKind::Morph, duration: MORPH_LEN };
+        // 64 s is kept (a flash beats the earlier morph at 56 s); 70 s is within 8 bars of it and 2 s is
+        // within 8 bars of the start: all three dropped.
+        let shots = [
+            Shot { time: 56.0, transition: morph },
+            Shot { time: 64.0, transition: flash },
+            Shot { time: 70.0, transition: flash },
+            Shot { time: 2.0, transition: flash },
+        ];
+        let req = PlanRequest {
+            analysis: &a,
+            scenes: &scenes,
+            mode: Mode::Single,
+            markers: &[],
+            seed: 7,
+            previous: None,
+            reroll: &[],
+            force_scene: None,
+            generated: 0.0,
+            vibe: None,
+            genome_for: None,
+            blocks: None,
+            gen_dir: Path::new("."),
+            shots: &shots,
+        };
+        let p = plan(&req).unwrap();
+        assert_eq!(p.segments.len(), 2);
+        assert_eq!(p.segments[1].start, 64.0);
+        assert_eq!(p.segments[1].transition_in.kind, TransitionKind::Flash);
+        // Markers mode ignores shots.
+        assert_eq!(plan(&PlanRequest { mode: Mode::Markers, ..req }).unwrap().segments.len(), 1);
+    }
+
+    #[test]
     fn generated_segments_carry_their_genome() {
         let a = test_analysis();
         let scenes = test_scenes();
@@ -686,6 +751,8 @@ mod tests {
             motion: vec![block("m0"), block("m1")],
             emitter: vec![block("e0"), block("e1")],
             colour: vec![block("c0")],
+            backdrop: vec![],
+            overlay: vec![],
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
         let gen = |_, _, r| Some(genome::random(&blocks, r));
@@ -703,6 +770,7 @@ mod tests {
             genome_for: Some(&gen),
             blocks: Some(&blocks),
             gen_dir: Path::new("."),
+            shots: &[],
         };
         let p = plan(&req(&[])).unwrap();
         for s in &p.segments {

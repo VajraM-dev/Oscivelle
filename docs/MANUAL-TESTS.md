@@ -57,6 +57,22 @@ eleaseisualiser.exe --setup-ai`. Enter the base URL, key and a model that suppo
 - [ ] Optional: `/security-review` on `src/llm.rs`. It was skipped because the branch was built at tier T2.
 - [ ] Merge `feature/dynamic-visuals` → `main` (21 commits after `b47bce5`).
 
+## 7. Motion layers (`feature/motion-layers`)
+
+- [ ] Layers: `target\release\visualiser testdata\dnb5.mp3 --replan --layers --preview 1:00 --quality draft`, then **watch** the preview. Backdrops behind the visuals, a flash on drops, a morph on build-ups?
+- [ ] Picture + VHS: `target\release\visualiser testdata\dnb5.mp3 --replan --layers --image clouds.jpg --look vhs --preview 1:00 --quality draft` (any png/jpeg for `clouds.jpg`). Is the picture shown, with wobble and colour bleed?
+- [ ] Mono: `target\release\visualiser testdata\dnb5.mp3 --replan --layers --look mono --preview 1:00 --quality draft`. Whole video tinted?
+- [ ] Default output unchanged: render `target\release\visualiser testdata\dnb5.mp3 --replan --generated 0 --preview 1:00 --quality draft` on `main` (copy the mp4 aside as `main1.mp4`), again on `main` (`main2.mp4`), then on this branch (`branch.mp4`). Compare pairs with `ffmpeg -i a.mp4 -i b.mp4 -lavfi psnr -f null -`.
+  The render is not bit-deterministic run to run on `main` (GPU), so `framemd5` can't be used. Instead the average PSNR of `branch.mp4` vs `main1.mp4` should match that of `main2.mp4` vs `main1.mp4` (about 42 dB observed).
+
+## 8. AI pictures and storyboard (M2, costs money)
+
+- [ ] `target\release\visualiser --setup-ai`, then enter `gpt-image-1` at the image-model prompt. Expect `Image model gpt-image-1 saved` and `Saved.`
+- [ ] `target\release\visualiser testdata\dnb8.wav --replan --vibe "90s CGI, chrome pyramid on a mirror sea, VHS" --preview 1:00 --quality draft`. Watch the preview: a chrome pyramid, a mirror sea, VHS wobble? Do the shots change at drops and build-ups?
+- [ ] `target\release\visualiser testdata\dnb8.wav --replan --vibe "green hologram brain, HUD rings, mono" --preview 1:00 --quality draft`. Expect a cut-out plate, `back_sprite` and `over_hud`, in green mono.
+- [ ] Run the previous command again: no `vibe: painting` lines (pictures come from the cache in `plates\` in the data folder).
+- [ ] With no image model set (`--forget-ai`, then `--setup-ai` and press Enter at the image prompt): a vibe still works and requests no pictures.
+
 ## Known gaps (not bugs, decided)
 
 - A saved plan that names a block that has since been deleted stops with an error; `--replan` fixes it.

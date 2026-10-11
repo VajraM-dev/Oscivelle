@@ -15,11 +15,15 @@ struct U {
     p1: vec4<f32>,       // scene params 4..7
     pal: array<vec4<f32>, 4>,
     misc: vec4<f32>,     // hue shift turns, quality (0 draft / 1 final), s since kick, s since drop (1e3 if none)
+    p2: vec4<f32>,       // scene params 8..11 (generated looks: backdrop block)
+    p3: vec4<f32>,       // scene params 12..15 (generated looks: overlay block)
 };
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var prev_tex: texture_2d<f32>;
 @group(0) @binding(2) var prev_samp: sampler; // linear, mirror-repeat
+@group(0) @binding(3) var plate_tex: texture_2d_array<f32>; // the plan's pictures (linear rgba)
+@group(0) @binding(4) var plate_samp: sampler;               // linear, clamp
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
@@ -44,18 +48,33 @@ fn quality() -> f32 { return u.misc.y; }
 fn since_kick() -> f32 { return u.misc.z; }
 fn since_drop() -> f32 { return u.misc.w; }
 
-// Scene param i (0..7), order as declared in the scene's .toml.
+// Scene param i (0..15), order as declared in the scene's .toml.
 fn P(i: i32) -> f32 {
     switch i {
         case 0: { return u.p0.x; } case 1: { return u.p0.y; }
         case 2: { return u.p0.z; } case 3: { return u.p0.w; }
         case 4: { return u.p1.x; } case 5: { return u.p1.y; }
-        case 6: { return u.p1.z; } default: { return u.p1.w; }
+        case 6: { return u.p1.z; } case 7: { return u.p1.w; }
+        case 8: { return u.p2.x; } case 9: { return u.p2.y; }
+        case 10: { return u.p2.z; } case 11: { return u.p2.w; }
+        case 12: { return u.p3.x; } case 13: { return u.p3.y; }
+        case 14: { return u.p3.z; } default: { return u.p3.w; }
     }
 }
 
 // Previous frame (HDR).
 fn prev(uv: vec2<f32>) -> vec3<f32> { return textureSampleLevel(prev_tex, prev_samp, uv, 0.0).rgb; }
+
+// Plate i (one of the plan's 3:2 pictures) placed in centred coords: x -1.5..1.5, y -1..1
+// (the frame is x -aspect..aspect). Linear rgba with the picture's alpha; 0 outside it or when
+// there is no plate i.
+fn plate(i: i32, p: vec2<f32>) -> vec4<f32> {
+    let uv = vec2<f32>(p.x / 3.0 + 0.5, 0.5 - p.y * 0.5);
+    if (i < 0 || i >= i32(textureNumLayers(plate_tex)) || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return vec4<f32>(0.0);
+    }
+    return textureSampleLevel(plate_tex, plate_samp, uv, i, 0.0);
+}
 
 // uv (0..1) <-> centred coords: y in -1..1, x in -aspect..aspect.
 fn to_centered(uv: vec2<f32>) -> vec2<f32> { return vec2<f32>((uv.x * 2.0 - 1.0) * aspect(), 1.0 - uv.y * 2.0); }

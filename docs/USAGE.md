@@ -14,6 +14,7 @@
 - [Preview window](#preview-window---dev)
 - [Writing scenes](#writing-scenes)
 - [Generated scenes](#generated-scenes---generated---keep)
+- [Motion graphics](#motion-graphics---layers---image---look)
 - [AI features](#ai-features---setup-ai---vibe---forget-ai)
 - [Writing scenes with --author](#writing-scenes-with---author)
 - [Scene blocks](#scene-blocks)
@@ -45,10 +46,20 @@ That runs with all defaults: Auto mode, final quality, 1080p at 30 fps, seed 1, 
 
 ## Guided mode
 
-Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, an optional vibe, full video or a 30-second test, resolution, and optionally seed, titles and film grain. It then prints the equivalent command line, so you can copy it for next time, and renders.
+Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, motion graphics, who designs the visuals (core engine or AI), your own pictures, the finishing look, what to make (live preview, full video or a 30-second test file), resolution, and optionally seed, film grain and (with a tracklist) titles. It then prints the equivalent command line, so you can copy it for next time, and renders.
+
+- **Live preview in a window** (the first choice) asks a start time (default 1:00) and opens the [preview window](#preview-window---dev) at draft quality (`--dev --start <time> --quality draft`). Nothing is saved except the plan. Keys: `Space` pause, `R` restart, `D` debug overlay, `Esc` close. When the window closes, a menu offers:
+  - **Render the full video with these settings**: asks the resolution, then renders. It reuses the previewed plan (same seed and settings), so the video matches what you saw and the AI vibe isn't paid for again.
+  - **Render a 30-second test file**: a draft `--preview` file from the same start time.
+  - **Try another take (new seed)**: adds 1 to the seed, shows it, and previews again. The vibe is cached, so a new take costs no AI credit.
+  - **Change settings**: asks the questions again with your previous answers selected (the audio file is kept unless you choose another), then previews again, or renders if you pick full video or a test file.
+  - **Quit** (or `Esc`).
+- Choosing **Full video** or **Quick 30-second test file** directly renders straight away, with no menu.
 
 - **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
-- **Describe the vibe** is asked after the style, only when the style includes generated scenes and an AI service is set up. Type a few words or press Enter to skip. Without one it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
+- **Motion graphics** (generated styles only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only.
+- **Who designs the visuals** is asked only when an AI service is set up. "Core engine only" is free and works offline. "Let AI design it" asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. Without an AI service it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
+- **Your own pictures** is asked after motion graphics or an AI description: pick PNG/JPG files (`--image`, up to 8). Full-frame photos become backdrops, transparent PNGs float as cut-outs.
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
 - `Esc` quits at any question.
@@ -508,13 +519,36 @@ The scene is written to `scenes\gen_<id>.wgsl` and `.toml`. After that it is a n
 
 ---
 
+## Motion graphics: `--layers`, `--image`, `--look`
+
+Layers put motion graphics on top of the generated scenes' feedback visuals. Everything is built in: no AI, no key, no download.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--layers` | flag | off | Dresses generated scenes with a **backdrop**: `back_sky` (gradient sky), `back_sea` (raymarched sea world) or `back_plate` / `back_sprite` (show your `--image`). Some also get an **overlay**: `over_hud` (rings), `over_grid` (retro grid) or `over_title` (pixel text). Adds a new shot on each drop (a flash) and each build-up (a morph), snapped to phrases. Turns generated scenes on (share `1`) if `--generated` would be `0`. |
+| `--image <FILE>` | png or jpeg path | none | A picture the backdrops can show. Repeatable, up to 8; extra ones are dropped with a warning. Only used with `--layers` (a warning says so otherwise). Each picture is centre-cropped and fitted to 3:2 (1536x1024). An unreadable file stays blank, with a warning. |
+| `--look <LOOK>` | `clean`, `vhs`, `crt`, `mono` | none (same as `clean`) | Finishing look for the whole video: VHS wobble and colour bleed, CRT scanlines, or a mono tint. |
+
+- `--look` is a render setting like `--no-grain`: set it on every run, it is not saved in the plan or reused.
+- `--layers` and the `--image` list are part of the plan: changing either makes a new plan. A plain re-run with the same ones reuses the saved plan.
+- Without these flags nothing changes: the default render is the same as before.
+- `--keep N` exports a layered look too: `scenes\gen_<id>.layers.wgsl` is copied next to the `.wgsl` and `.toml`.
+
+```
+visualiser.exe song.wav --replan --layers --preview 1:00 --quality draft
+visualiser.exe song.wav --replan --layers --image clouds.jpg --look vhs --preview 1:00 --quality draft
+visualiser.exe song.wav --replan --layers --look mono --preview 1:00 --quality draft
+```
+
+---
+
 ## AI features (`--setup-ai`, `--vibe`, `--forget-ai`)
 
 Optional. Full details: [AI.md](AI.md). You bring your own **OpenAI-compatible API**: OpenAI, OpenRouter, Groq, Together, a local Ollama / LM Studio / vLLM server, or anything else that serves `/chat/completions`. Answers are requested as strict structured output (`response_format` JSON schema), so the output always has the expected shape; servers without it get a tool call instead. The model needs one of the two (most current models have both). Without one, everything else works as before.
 
 | Option | Description |
 |---|---|
-| `--setup-ai` | Asks for the API base URL (default `https://api.openai.com/v1`; e.g. `https://openrouter.ai/api/v1`, `http://localhost:11434/v1` for Ollama), the key (hidden as you type; leave empty for local servers that need none) and the model id. It tests them with a tiny request and stores them in **Windows Credential Manager**. The installer's "Set up AI features now" checkbox and the Start Menu "Set up AI" entry run the same thing. |
+| `--setup-ai` | Asks for the API base URL (default `https://api.openai.com/v1`; e.g. `https://openrouter.ai/api/v1`, `http://localhost:11434/v1` for Ollama), the key (hidden as you type; leave empty for local servers that need none) the model id and, optionally, an image model id (e.g. `gpt-image-1`, OpenAI image models only; leave empty for no AI pictures). It tests the model with a tiny request (not the image model, which costs money) and stores them in **Windows Credential Manager**. The installer's "Set up AI features now" checkbox and the Start Menu "Set up AI" entry run the same thing. |
 | `--vibe "<TEXT>"` | Describe the visuals in your own words, for example `--vibe "dark and liquid, slow"`. The AI tunes the blocks' settings to the vibe, picks looks that the generated scenes then evolve from (still scored on your music), and writes new shader blocks when the library can't express what you asked for. If the share of generated scenes would be 0, `--vibe` makes it 1, since a vibe only steers generated scenes. |
 | `--forget-ai` | Removes the stored settings. Uninstalling does this too. |
 
@@ -525,6 +559,7 @@ Optional. Full details: [AI.md](AI.md). You bring your own **OpenAI-compatible A
 | `VISUALISER_AI_MODEL` | The model id. Required for the env-var setup; on its own it overrides the stored model. |
 | `OPENAI_API_KEY` | The key. |
 | `OPENAI_BASE_URL` | The base URL (default `https://api.openai.com/v1`). |
+| `VISUALISER_IMAGE_MODEL` | The image model id. Overrides a stored one. |
 
 With nothing stored, the env vars are used when `VISUALISER_AI_MODEL` is set together with `OPENAI_API_KEY` or `OPENAI_BASE_URL`.
 

@@ -66,7 +66,7 @@ pub fn render_video(job: &RenderJob) -> Result<()> {
     let instance = wgpu::Instance::default();
     let (_adapter, device, queue) = engine::gpu(&instance, job.cpu, None)?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut eng = Engine::new(&device, &queue, job.scenes, &job.scenes_dir, job.quality, job.width, job.height, format);
+    let mut eng = Engine::new(&device, &queue, job.scenes, &job.scenes_dir, job.quality, job.width, job.height, format, &crate::plates::load_all(&job.plan.plates));
     eprintln!("sim {}x{} -> output {}x{} ({:?})", eng.sim.0, eng.sim.1, job.width, job.height, job.quality);
     let out_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("out"),
@@ -303,6 +303,13 @@ fn job_hash(job: &RenderJob) -> Result<u64> {
     // Only scenes this plan uses, so editing another scene doesn't throw away finished chunks.
     for s in job.scenes.iter().filter(|s| job.plan.segments.iter().any(|g| g.scene == s.id)) {
         data.extend(scenes::shader_source(&job.scenes_dir, s)?.bytes());
+        if let Some(src) = scenes::layers_source(&job.scenes_dir, s) {
+            data.extend(src?.bytes());
+        }
+    }
+    // Plate files by content (an edited --image must re-render).
+    for p in &job.plan.plates {
+        data.extend(std::fs::read(p).unwrap_or_default());
     }
     Ok(fnv1a(&data))
 }

@@ -2,9 +2,11 @@ mod analysis;
 mod author;
 mod director;
 mod evolve;
+mod font;
 mod genome;
 mod llm;
 mod markers;
+mod plates;
 mod preview;
 mod render;
 mod scenes;
@@ -13,7 +15,7 @@ mod types;
 mod vibe;
 mod wizard;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
@@ -88,6 +90,15 @@ struct Cli {
     /// Describe the visuals in your own words; the AI tunes, combines and, when needed, writes new shader blocks (needs an AI service: see --setup-ai).
     #[arg(long)]
     vibe: Option<String>,
+    /// Motion graphics on generated scenes: a backdrop (sky, raymarched sea world, your --image), sometimes a HUD/grid/text overlay, and a new shot at each drop.
+    #[arg(long)]
+    layers: bool,
+    /// A picture the looks can show (with --layers or --vibe); repeatable, up to 8.
+    #[arg(long)]
+    image: Vec<PathBuf>,
+    /// Finishing look for the whole video: clean, vhs, crt or mono.
+    #[arg(long, value_enum)]
+    look: Option<Look>,
     /// Set up an OpenAI-compatible AI service (URL, key, model) for the AI features.
     #[arg(long)]
     setup_ai: bool,
@@ -122,11 +133,30 @@ fn main() {
 
 fn guided() -> Result<()> {
     use inquire::InquireError::{OperationCanceled, OperationInterrupted};
-    let answers = match wizard::ask() {
+    let asked = || -> Result<Option<wizard::Answers>> {
+        let mut a = wizard::ask(None)?;
+        // Live preview, then a menu, until something renders or the user quits.
+        while a.start.is_some() {
+            println!("\x1b[2mPreview window keys: Space pause, R restart, D debug overlay, Esc close.\x1b[0m");
+            // A child process: winit allows only one event loop per process, and the user may preview again.
+            match std::process::Command::new(std::env::current_exe()?).args(wizard::to_args(&a)).status() {
+                Ok(s) if s.success() => {}
+                Ok(s) => eprintln!("preview failed ({s})"),
+                Err(e) => eprintln!("preview failed: {e}"),
+            }
+            match wizard::after_preview(&a)? {
+                Some(next) => a = next,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(a))
+    };
+    let answers = match asked() {
         // Esc / Ctrl-C: the user quit, not an error.
         Err(e) if matches!(e.downcast_ref(), Some(OperationCanceled | OperationInterrupted)) => return Ok(()),
         r => r?,
     };
+    let Some(answers) = answers else { return Ok(()) };
     let args = wizard::to_args(&answers);
     println!("\nSame thing as a command, for next time:\n  {}\n", wizard::command_line(&args));
     run(Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args))?)
@@ -189,20 +219,44 @@ fn run(cli: Cli) -> Result<()> {
     let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
     // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
     let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
-    // A vibe only steers generated scenes, so it implies some.
-    let generated = if cli.vibe.is_some() && generated == 0.0 { 1.0 } else { generated };
+    // A vibe or --layers only steers generated scenes, so they imply some.
+    let generated = if (cli.vibe.is_some() || cli.layers) && generated == 0.0 { 1.0 } else { generated };
+    // Absolute, so the saved plan still finds them from another working directory.
+    let user_plates = cli
+        .image
+        .iter()
+        .take(plates::MAX)
+        .map(|p| std::fs::canonicalize(p).with_context(|| format!("--image {}", p.display())))
+        .collect::<Result<Vec<PathBuf>>>()?;
+    if cli.image.len() > plates::MAX {
+        eprintln!("warning: only the first {} --image pictures are used", plates::MAX);
+    }
+    if !user_plates.is_empty() && !cli.layers && cli.vibe.is_none() {
+        eprintln!("warning: --image is only shown with --layers or --vibe");
+    }
+    // The vibe's pictures (<data>/plates/) follow the --image ones in a saved plan.
+    let ai_plates = data.join("plates");
     let reuse = !cli.replan
         && !cli.reanalyse
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()));
+        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()))
+        && previous.as_ref().is_some_and(|p| {
+            p.layers == cli.layers && p.plates.starts_with(&user_plates) && p.plates[user_plates.len()..].iter().all(|q| q.starts_with(&ai_plates))
+        });
     let gen_dir = data.join("gen");
     // The vibe runs before blocks load, so the blocks it writes are included. Its judge is reused by evolution.
-    let (judge, seeds) = match &cli.vibe {
-        Some(v) if !reuse && generated > 0.0 && cli.keep.is_none() => vibe_seeds(&cli, v, &scenes, &scenes_dir, &gen_dir, &analysis, &data),
-        _ => (None, Vec::new()),
+    let (judge, design) = match &cli.vibe {
+        Some(v) if !reuse && generated > 0.0 && cli.keep.is_none() => vibe_seeds(&cli, v, &user_plates, &scenes, &scenes_dir, &gen_dir, &analysis, &data),
+        _ => (None, vibe::Design::default()),
     };
+    let vibe::Design { genomes: seeds, plates: vibe_plates, shots: story } = design;
+    // The vibe's plate list (--image files, then its pictures) replaces the user's when it made one.
+    let plates = if vibe_plates.is_empty() { user_plates } else { vibe_plates };
+    // A storyboard directs every segment, so none rolls a curated scene. Saved in the plan, so a plain re-run
+    // (generated taken from the plan) still reuses it; the vibe only runs when not reusing, so reuse never sees this.
+    let generated = if story.is_empty() { generated } else { 1.0 };
     // Blocks only when something is (or was) generated.
     let blocks = if generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
         Some(genome::Blocks::load(&scenes_dir.join("blocks"))?)
@@ -218,7 +272,7 @@ fn run(cli: Cli) -> Result<()> {
         eprintln!("kept as scenes/{id}");
         return Ok(());
     }
-    let plan = match previous {
+    let mut plan = match previous {
         Some(p) if reuse => {
             eprintln!("using saved plan {}", plan_path.display());
             p
@@ -238,17 +292,54 @@ fn run(cli: Cli) -> Result<()> {
             // Evolution stays on-vibe: random picks and mutations only use the seeds' blocks.
             let sub = blocks.as_ref().filter(|_| !seeds.is_empty()).map(|b| b.subset(&seeds));
             // Each generated segment starts from a different seed.
-            let k = Cell::new(0);
+            let k = Cell::new(0usize);
             let budget = if cli.quality == Quality::Draft { 10 } else { 20 };
             let evolved = |start: f64, end: f64, r| {
                 let blocks = blocks.as_ref().filter(|_| generated > 0.0)?;
                 eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
                 let judge = gen.get_or_init(|| score::Judge::new(&scenes, &scenes_dir, cli.cpu).map(RefCell::new)).as_ref().ok()?;
-                let i = k.replace(k.get() + 1) % seeds.len().max(1);
+                // The take's seed shifts the rotation, so new takes start from other looks.
+                let i = k.replace(k.get() + 1).wrapping_add(hash(cli.seed, 0x5EED) as usize) % seeds.len().max(1);
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
                 evolve::best(&mut judge.borrow_mut(), sub.as_ref().unwrap_or(blocks), &gen_dir, &analysis, start, end, r, &rotated, budget)
             };
-            let plan = director::plan(&director::PlanRequest {
+            let text = audio.file_stem().map(|s| s.to_string_lossy().replace(['_', '-'], " ")).unwrap_or_default();
+            // --layers dresses the evolved look (unless it already has layers, e.g. from the vibe).
+            let dressed = |start: f64, end: f64, r: u64| {
+                let g = evolved(start, end, r)?;
+                match blocks.as_ref() {
+                    Some(b) if cli.layers && !g.has_layers() => Some(genome::dress(&g, b, hash(r, 7), plates.len(), &text)),
+                    _ => Some(g),
+                }
+            };
+            // --layers: a morph into each build-up and a flash on each drop.
+            let shots: Vec<Shot> = if cli.layers {
+                analysis
+                    .drops
+                    .iter()
+                    .flat_map(|d| {
+                        [
+                            Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } },
+                            Shot { time: d.time, transition: Transition { kind: TransitionKind::Flash, duration: 0.0 } },
+                        ]
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            // A storyboard picks each shot's look as designed (no evolution): the AI is directing.
+            // The shot nearest the segment start (the director snaps shots up to 2 bars and may drop some);
+            // else the last one before it.
+            let bar = director::bar_len(&analysis);
+            let storyboard = |start: f64, _end: f64, _r: u64| {
+                blocks.as_ref()?;
+                let near = story.iter().filter(|(s, _)| (s.time - start).abs() <= 2.0 * bar).min_by(|x, y| (x.0.time - start).abs().total_cmp(&(y.0.time - start).abs()));
+                let (_, look) = near.or_else(|| story.iter().rev().find(|(s, _)| s.time <= start)).or(story.first())?;
+                seeds.get(*look).cloned()
+            };
+            let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if story.is_empty() { &dressed } else { &storyboard };
+            let shots = if story.is_empty() { shots } else { story.iter().map(|(s, _)| *s).collect() };
+            let mut plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
                 mode,
@@ -259,10 +350,13 @@ fn run(cli: Cli) -> Result<()> {
                 force_scene: cli.scene.as_deref(),
                 generated,
                 vibe: cli.vibe.as_deref(),
-                genome_for: Some(&evolved),
+                genome_for: Some(gf),
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
+                shots: &shots,
             })?;
+            plan.plates = plates.clone();
+            plan.layers = cli.layers;
             // No judge (e.g. no GPU): the plan above already fell back to hand-made scenes.
             if let Some(Err(e)) = gen.into_inner() {
                 eprintln!("warning: can't generate scenes ({e:#}); using hand-made ones");
@@ -275,6 +369,8 @@ fn run(cli: Cli) -> Result<()> {
             plan
         }
     };
+    // A render setting like --no-grain: set on every run, never reused.
+    plan.post = cli.look.map(Look::post);
 
     // Generated scenes become ordinary scenes: write each genome's .wgsl once.
     for g in plan.segments.iter().filter_map(|s| s.genome.as_ref()) {
@@ -286,10 +382,16 @@ fn run(cli: Cli) -> Result<()> {
     // A new plan leaves losing candidates (and the old plan's scenes) in gen_dir: drop them.
     // Not for the throwaway --scene plan, which would delete the saved plan's scenes.
     if !reuse && cli.scene.is_none() {
-        let used: Vec<String> = plan.segments.iter().filter_map(|s| Some(format!("{}.wgsl", s.genome.as_ref()?.id()))).collect();
+        let used: Vec<String> = plan
+            .segments
+            .iter()
+            .filter_map(|s| s.genome.as_ref())
+            .map(|g| g.id().to_string())
+            .collect();
         for e in std::fs::read_dir(&gen_dir).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".wgsl") && !used.contains(&name) {
+            // `<id>.wgsl` and `<id>.layers.wgsl` both belong to genome `<id>`.
+            if name.ends_with(".wgsl") && !used.iter().any(|id| name.split('.').next() == Some(id.as_str())) {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -361,28 +463,29 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// The vibe's starting genomes, plus the judge (a small headless renderer) it made, for evolution.
+/// The vibe's design (starting genomes, plates, storyboard), plus the judge (a small headless renderer) it made, for evolution.
 /// AI trouble never fails a render: warn and evolve without seeds.
-fn vibe_seeds(cli: &Cli, v: &str, scenes: &[scenes::Scene], scenes_dir: &Path, gen_dir: &Path, analysis: &Analysis, data: &Path) -> (Option<score::Judge>, Vec<genome::Genome>) {
+#[allow(clippy::too_many_arguments)]
+fn vibe_seeds(cli: &Cli, v: &str, images: &[PathBuf], scenes: &[scenes::Scene], scenes_dir: &Path, gen_dir: &Path, analysis: &Analysis, data: &Path) -> (Option<score::Judge>, vibe::Design) {
     let mut judge = match score::Judge::new(scenes, scenes_dir, cli.cpu) {
         Ok(j) => j,
         Err(e) => {
             eprintln!("warning: vibe needs the scene judge ({e:#}); continuing without it");
-            return (None, Vec::new());
+            return (None, vibe::Design::default());
         }
     };
     let Some(c) = llm::load() else {
         eprintln!("warning: no AI service set up (run visualiser --setup-ai); continuing without the vibe");
-        return (Some(judge), Vec::new());
+        return (Some(judge), vibe::Design::default());
     };
     let dir = scenes_dir.join("blocks");
-    let seeds = genome::Blocks::load(&dir)
-        .and_then(|b| vibe::run(&c, &mut judge, &dir, gen_dir, &b, analysis, v, &data.join("vibe.json")))
+    let design = genome::Blocks::load(&dir)
+        .and_then(|b| vibe::run(&c, &mut judge, &dir, gen_dir, &b, analysis, v, images, &data.join("vibe.json")))
         .unwrap_or_else(|e| {
             eprintln!("warning: vibe failed ({e:#}); continuing without it");
-            Vec::new()
+            vibe::Design::default()
         });
-    (Some(judge), seeds)
+    (Some(judge), design)
 }
 
 fn load_or_analyse(audio: &Path, data: &Path, reanalyse: bool) -> Result<Analysis> {
