@@ -34,6 +34,14 @@ pub struct Genome {
     /// Finishing look.
     #[serde(default, skip_serializing_if = "Post::is_clean")]
     pub post: Post,
+    /// Engine-2 genes ("" = none, the engine-1 recipe). Space block id, blend mode (genome::BLENDS) and
+    /// regime name (regime::REGIMES). Empty genes are left out of the JSON, so engine-1 ids are unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub space: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub blend: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub regime: String,
 }
 
 impl Genome {
@@ -49,8 +57,14 @@ impl Genome {
             1 => &mut self.emitter,
             2 => &mut self.colour,
             3 => &mut self.backdrop,
-            _ => &mut self.overlay,
+            4 => &mut self.overlay,
+            _ => &mut self.space,
         })
+    }
+
+    /// Uses the engine-2 template (has any engine-2 gene).
+    pub fn is_v2(&self) -> bool {
+        !self.space.is_empty() || !self.blend.is_empty() || !self.regime.is_empty()
     }
 
     /// Has a backdrop or overlay (so it also has a layer pass).
@@ -60,10 +74,11 @@ impl Genome {
 
     /// Keeps only finite tuned values whose key names a param of this genome's blocks.
     pub fn prune(&mut self, blocks: &Blocks) {
-        let (Ok(parts), Ok(layers)) = (blocks.parts(self), blocks.layer_parts(self)) else { return self.params.clear() };
+        let (Ok(parts), Ok(layers), Ok(space)) = (blocks.parts(self), blocks.layer_parts(self), blocks.space_part(self)) else { return self.params.clear() };
         let keys: Vec<String> = parts
             .into_iter()
             .chain(layers.into_iter().flatten())
+            .chain(space)
             .flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name)))
             .collect();
         self.params.retain(|k, v| keys.contains(k) && v.is_finite());
@@ -92,6 +107,8 @@ pub struct Blocks {
     /// Layer blocks (optional kinds).
     pub backdrop: Vec<Block>,
     pub overlay: Vec<Block>,
+    /// Engine-2 space folds (optional kind).
+    pub space: Vec<Block>,
     /// Palette bank, sRGB hex.
     pub palettes: Vec<[String; 4]>,
 }
@@ -103,11 +120,12 @@ struct BlockToml {
     params: Vec<ParamRange>,
 }
 
-/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last two (layers) are optional.
-pub const KINDS: [&str; 5] = ["motion", "emitter", "colour", "backdrop", "overlay"];
+/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last three (layers, space) are optional.
+pub const KINDS: [&str; 6] = ["motion", "emitter", "colour", "backdrop", "overlay", "space"];
 
-/// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13).
-const SLOTS: [usize; 5] = [3, 3, 2, 4, 2];
+/// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13);
+/// space (engine 2) uses slots 14..15.
+const SLOTS: [usize; 6] = [3, 3, 2, 4, 2, 2];
 
 fn kind_index(kind: &str) -> Result<usize> {
     KINDS.iter().position(|k| *k == kind).with_context(|| format!("unknown kind {kind}"))
@@ -126,6 +144,23 @@ impl Block {
     }
 }
 
+/// Library v1: the only blocks engine 1 picks from, frozen so new (or AI-written) blocks never change old seeds.
+const V1_BLOCKS: &[&str] = &[
+    "back_plate", "back_sea", "back_sky", "back_sprite",
+    "colour_duotone", "colour_hue", "colour_intensity", "colour_iridescent", "colour_whitehot",
+    "emit_blobs", "emit_clouds", "emit_contours", "emit_filaments", "emit_lissajous", "emit_polygon", "emit_rings", "emit_stars",
+    "motion_deepzoom", "motion_ink", "motion_kaleido", "motion_push", "motion_swirl", "motion_tunnel",
+    "over_grid", "over_hud", "over_title",
+];
+/// palettes.toml entries engine 1 picks from (the first N).
+const V1_PALETTES: usize = 30;
+/// Added for engine 2 (V1_BLOCKS + these).
+const V2_BLOCKS: &[&str] = &[
+    "space_droste", "space_hyper", "space_kaleido", "space_kifs", "space_mirror", "space_polar",
+    "motion_erode", "motion_etch", "motion_mosh", "motion_sort",
+    "emit_cells", "emit_hypertile", "emit_kifs3d", "emit_lyapunov", "emit_mandelbox", "emit_orbit", "emit_sdftunnel", "emit_truchet", "emit_warpfbm",
+];
+
 impl Blocks {
     /// Loads scenes/blocks/*.toml (+ matching .wgsl) and palettes.toml.
     pub fn load(dir: &Path) -> Result<Blocks> {
@@ -134,7 +169,7 @@ impl Blocks {
             palettes: Vec<[String; 4]>,
         }
         let pal: Pal = toml::from_str(&std::fs::read_to_string(dir.join("palettes.toml")).context("blocks/palettes.toml")?)?;
-        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], palettes: pal.palettes };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], space: vec![], palettes: pal.palettes };
         let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| Some(e.ok()?.path())).collect();
         paths.sort();
         for path in paths {
@@ -175,9 +210,14 @@ impl Blocks {
         Ok([Self::opt(&self.backdrop, &g.backdrop)?, Self::opt(&self.overlay, &g.overlay)?])
     }
 
+    /// The genome's space block ("" = none), or an error naming an unknown id.
+    pub fn space_part(&self, g: &Genome) -> Result<Option<&Block>> {
+        Self::opt(&self.space, &g.space)
+    }
+
     /// The blocks of `kind`.
     pub fn list(&self, kind: &str) -> Result<&Vec<Block>> {
-        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay][kind_index(kind)?])
+        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space][kind_index(kind)?])
     }
 
     fn list_mut(&mut self, kind: &str) -> Result<&mut Vec<Block>> {
@@ -186,7 +226,8 @@ impl Blocks {
             1 => &mut self.emitter,
             2 => &mut self.colour,
             3 => &mut self.backdrop,
-            _ => &mut self.overlay,
+            4 => &mut self.overlay,
+            _ => &mut self.space,
         })
     }
 
@@ -218,13 +259,29 @@ impl Blocks {
             colour: pick(&self.colour, |g| &g.colour),
             backdrop: pick(&self.backdrop, |g| &g.backdrop),
             overlay: pick(&self.overlay, |g| &g.overlay),
+            space: pick(&self.space, |g| &g.space),
             palettes,
+        }
+    }
+
+    /// The frozen library of `engine` (1 or 2): only its block ids, in load (sorted) order, and its palettes.
+    pub fn pinned(&self, engine: u32) -> Blocks {
+        let ok = |id: &str| V1_BLOCKS.contains(&id) || (engine >= 2 && V2_BLOCKS.contains(&id));
+        let keep = |l: &[Block]| l.iter().filter(|b| ok(&b.id)).cloned().collect();
+        Blocks {
+            motion: keep(&self.motion),
+            emitter: keep(&self.emitter),
+            colour: keep(&self.colour),
+            backdrop: keep(&self.backdrop),
+            overlay: keep(&self.overlay),
+            space: keep(&self.space),
+            palettes: self.palettes[..V1_PALETTES.min(self.palettes.len())].to_vec(),
         }
     }
 
     /// The range of param `key` (see `param_key`).
     fn param(&self, key: &str) -> Option<&ParamRange> {
-        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay].into_iter().flatten();
+        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space].into_iter().flatten();
         all.flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty() && param_key(&b.id, &p.name) == key)).next()
     }
 }
@@ -508,10 +565,7 @@ mod tests {
     /// Engine 1 must never change: fingerprints of generated sources and picks (captured before engine 2 work).
     #[test]
     fn engine1_genomes_are_frozen() {
-        let mut b = blocks();
-        // Only the committed layer blocks (the folder may hold untracked AI-written ones).
-        b.backdrop.retain(|x| ["back_plate", "back_sea", "back_sky", "back_sprite"].contains(&x.id.as_str()));
-        b.overlay.retain(|x| ["over_grid", "over_hud", "over_title"].contains(&x.id.as_str()));
+        let b = blocks().pinned(1);
         let sig = |s: String| format!("{:016x}", fnv1a(s.as_bytes()));
         let layered = Genome { backdrop: "back_sky".into(), overlay: "over_hud".into(), plate: Some(1), feedback: Some(0.6), text: "HI".into(), ..genome() };
         let picks: String = (0..16u64)
@@ -525,5 +579,17 @@ mod tests {
         assert_eq!(sig(wgsl(&genome(), &b).unwrap()), "a4fdfcc0cf60b4dd");
         assert_eq!(sig(layers_wgsl(&layered, &b).unwrap().unwrap()), "f1291d26fa6fffb5");
         assert_eq!(sig(picks), "bd4ab21b71a54d52");
+    }
+
+    #[test]
+    fn library_pins() {
+        let b = blocks();
+        let v1 = b.pinned(1);
+        let ids = |l: &[Block]| l.iter().map(|x| x.id.as_str()).collect::<Vec<_>>().join(" ");
+        assert_eq!(ids(&v1.motion), "motion_deepzoom motion_ink motion_kaleido motion_push motion_swirl motion_tunnel");
+        assert_eq!(ids(&v1.backdrop), "back_plate back_sea back_sky back_sprite");
+        assert_eq!((v1.emitter.len(), v1.colour.len(), v1.overlay.len(), v1.space.len(), v1.palettes.len()), (8, 5, 3, 0, 30));
+        let v2 = b.pinned(2);
+        assert!(v1.motion.iter().all(|m| v2.motion.iter().any(|x| x.id == m.id)));
     }
 }

@@ -8,6 +8,7 @@ mod llm;
 mod markers;
 mod plates;
 mod preview;
+mod regime;
 mod render;
 mod scenes;
 mod score;
@@ -241,7 +242,7 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()))
+        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref(), 1))
         && previous.as_ref().is_some_and(|p| {
             p.layers == cli.layers && p.plates.starts_with(&user_plates) && p.plates[user_plates.len()..].iter().all(|q| q.starts_with(&ai_plates))
         });
@@ -354,6 +355,7 @@ fn run(cli: Cli) -> Result<()> {
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
                 shots: &shots,
+                engine: 1,
             })?;
             plan.plates = plates.clone();
             plan.layers = cli.layers;

@@ -28,6 +28,8 @@ pub struct PlanRequest<'a> {
     pub gen_dir: &'a std::path::Path,
     /// Shot changes inside the music (storyboard / --layers); ignored in markers mode.
     pub shots: &'a [Shot],
+    /// Visual engine (Plan.engine).
+    pub engine: u32,
 }
 
 // ---------------------------------------------------------------- rng
@@ -63,6 +65,9 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     if req.scenes.is_empty() {
         bail!("no scenes");
     }
+    // Auto picks come from the shipped scenes only; a library without them (tests) uses all.
+    let builtin: Vec<Scene> = req.scenes.iter().filter(|s| crate::scenes::BUILTIN.contains(&s.id.as_str())).cloned().collect();
+    let pool: &[Scene] = if builtin.is_empty() { req.scenes } else { &builtin };
     let bar = bar_len(a);
     let near_drop = |t: f64| a.drops.iter().any(|d| (d.time - t).abs() <= bar);
     let known = |id: &Option<String>| match id {
@@ -182,7 +187,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         .iter()
         .map(|b| req.previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
         .collect();
-    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe));
+    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine));
     let locked = |i: usize| prev[i].filter(|s| s.locked);
     let kept = |i: usize| prev[i].filter(|_| same_plan);
     // Source name mixed in so different files get different takes at the same seed.
@@ -208,7 +213,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                 None => {
                     let recent: Vec<&str> = scenes.iter().rev().take(3).map(|s| s.as_str()).collect();
                     let hard: Vec<&str> = scenes.last().map(|s| s.as_str()).into_iter().collect();
-                    (pick(req.scenes, &recent, &hard, hash(base_seed(i), 1)), None)
+                    (pick(pool, &recent, &hard, hash(base_seed(i), 1)), None)
                 }
             },
         };
@@ -248,7 +253,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                     let mut avoid: Vec<&str> = scenes[i.saturating_sub(3)..i].iter().map(|s| s.as_str()).collect();
                     avoid.extend(&neighbours);
                     avoid.push(&scenes[i]);
-                    pick(req.scenes, &avoid, &neighbours, hash(seed, 1))
+                    pick(pool, &avoid, &neighbours, hash(seed, 1))
                 }
             };
             // Later re-rolled neighbours must see this choice, not the old one.
@@ -290,7 +295,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false, engine: req.engine })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
@@ -456,6 +461,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             ModSource::Energy => base.shape[0] - 0.5,
             ModSource::Tension => base.shape[1],
             ModSource::Drop => base.shape[2],
+            ModSource::Snare => base.hits[0],
+            ModSource::Punch => base.hits[1],
         };
         for m in &s.mods {
             // Scenes have ≤ MAX_PARAMS params (checked at load); a hand-edited plan may name a missing or fixed one.
@@ -599,6 +606,7 @@ mod tests {
             track_changes: (1..6)
                 .map(|k| TrackChange { time: k as f64 * 96.0, confidence: 0.9, kind: ChangeKind::Blend, blend_len: 8.0 })
                 .collect(),
+            snares: vec![],
         }
     }
 
@@ -632,6 +640,7 @@ mod tests {
             blocks: None,
             gen_dir: Path::new("."),
             shots: &[],
+            engine: 1,
         };
         let p1 = plan(&req(&[])).unwrap();
         let p2 = plan(&req(&[])).unwrap();
@@ -683,7 +692,7 @@ mod tests {
                 crate::scenes::ParamRange { name: String::new(), min: 2.0, max: 4.0, fixed: false },
             ];
         }
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[] };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1 };
         let p = plan(&req).unwrap();
         assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
         let mut flat = p.clone();
@@ -728,6 +737,7 @@ mod tests {
             blocks: None,
             gen_dir: Path::new("."),
             shots: &shots,
+            engine: 1,
         };
         let p = plan(&req).unwrap();
         assert_eq!(p.segments.len(), 2);
@@ -753,6 +763,7 @@ mod tests {
             colour: vec![block("c0")],
             backdrop: vec![],
             overlay: vec![],
+            space: vec![],
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
         let gen = |_, _, r| Some(genome::random(&blocks, r));
@@ -771,6 +782,7 @@ mod tests {
             blocks: Some(&blocks),
             gen_dir: Path::new("."),
             shots: &[],
+            engine: 1,
         };
         let p = plan(&req(&[])).unwrap();
         for s in &p.segments {
@@ -792,7 +804,7 @@ mod tests {
     fn engine1_plan_and_frames_are_frozen() {
         let a = test_analysis();
         let scenes = test_scenes();
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[] };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1 };
         let p = plan(&req).unwrap();
         let mut s = serde_json::to_string(&p).unwrap();
         for t in [0.3, 10.0, 63.9, 64.05, 96.0, 300.0] {

@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 /// Simulation steps per second (feedback dynamics are tuned to this).
 pub const SIM_HZ: u32 = 60;
+/// Analysis format version; engine 2 re-analyses older files (they lack snares).
+pub const ANALYSIS_VERSION: u32 = 2;
 /// Output video frame rate; SIM_HZ / OUT_FPS sim steps per output frame.
 pub const OUT_FPS: u32 = 30;
 
@@ -70,6 +72,9 @@ pub struct Analysis {
     pub drops: Vec<Drop>,
     /// Track boundaries in a mix (excludes t=0).
     pub track_changes: Vec<TrackChange>,
+    /// Snare/clap onsets (broadband-dominated); empty in analyses older than ANALYSIS_VERSION 2.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snares: Vec<Kick>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -168,12 +173,22 @@ pub struct Plan {
     /// Made with --layers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub layers: bool,
+    /// Visual engine (--engine): 1 = the original looks, 2 = space folds, blends, moods, new blocks, onset hits.
+    #[serde(default = "engine_v1", skip_serializing_if = "is_engine_v1")]
+    pub engine: u32,
+}
+
+fn engine_v1() -> u32 {
+    1
+}
+fn is_engine_v1(e: &u32) -> bool {
+    *e <= 1
 }
 
 impl Plan {
     /// Made with these settings (its unlocked segments still apply).
-    pub fn same_inputs(&self, seed: u64, mode: Mode, generated: f32, vibe: Option<&str>) -> bool {
-        self.seed == seed && self.mode == mode && self.generated == generated && self.vibe.as_deref() == vibe
+    pub fn same_inputs(&self, seed: u64, mode: Mode, generated: f32, vibe: Option<&str>, engine: u32) -> bool {
+        self.seed == seed && self.mode == mode && self.generated == generated && self.vibe.as_deref() == vibe && self.engine == engine
     }
 }
 
@@ -220,6 +235,8 @@ pub enum ModSource {
     Energy,
     Tension,
     Drop,
+    Snare,
+    Punch,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -271,6 +288,22 @@ pub struct Post {
     pub tint_amount: f32,
     /// Linear RGB.
     pub tint: [f32; 3],
+    /// White flash on downbeats, 0..1 (the director gates it: ≤ 1 per bar).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub strobe: f32,
+    /// Red/blue split on snares, 0..1.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub rgb_split: f32,
+    /// Horizontal tear bands on snares, 0..1.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tear: f32,
+    /// Colour inversion on downbeats, 0..1.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub invert: f32,
+}
+
+fn is_zero(x: &f32) -> bool {
+    *x == 0.0
 }
 
 impl Post {
@@ -285,6 +318,10 @@ impl Post {
             posterize: lerp(self.posterize, o.posterize, f),
             tint_amount: lerp(self.tint_amount, o.tint_amount, f),
             tint: [0, 1, 2].map(|k| lerp(self.tint[k], o.tint[k], f)),
+            strobe: lerp(self.strobe, o.strobe, f),
+            rgb_split: lerp(self.rgb_split, o.rgb_split, f),
+            tear: lerp(self.tear, o.tear, f),
+            invert: lerp(self.invert, o.invert, f),
         }
     }
 }
@@ -342,6 +379,8 @@ pub struct SceneUniforms {
     /// Scene params 8..11 (backdrop block), 12..15 (overlay block); unused = 0.
     pub p2: [f32; 4],
     pub p3: [f32; 4],
+    /// Snare envelope 0..1, punch (fast kick onset) 0..1, s since snare (1e3 if none), drop anticipation 0..1.
+    pub hits: [f32; 4],
 }
 
 /// Everything the renderer needs for one simulation step.

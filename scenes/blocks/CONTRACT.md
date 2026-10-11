@@ -47,3 +47,15 @@ pass is fed back, so backdrops and overlays stay crisp while the feedback trails
   none). Pictures are 3:2: x -1.5..1.5, y -1..1, so scale p (e.g. `p / 1.25`) to cover the 16:9 frame.
 - `text_px(q)` + `TEXT_LEN` (overlay blocks): the look's text in a 5x7 pixel font (A-Z 0-9 . , - ' ! ? : / & +).
   q in glyph pixels: x from 0 at the left edge, y from 0 at the top row; 6 px per character. Returns 0 or 1.
+
+## Engine 2 (`--engine 2`)
+Generated looks may add a **space** block (kind `space`, ids `space_<name>`): it folds the plane before
+both the motion and the emitter see it, so trails and shapes inherit its symmetry.
+- space: `fn space(p: vec2<f32>) -> vec2<f32>`: centred coords in, centred coords out. Params `SP(0..1)` (≤ 2).
+  Keep the output roughly inside -2..2 (prev() mirrors outside the frame).
+- Engine-2 template: `p = space(to_centered(uv))`, `col = prev(motion(to_uv(p))) * decay`,
+  `col = blend(col, colour(emit(p)) * drive)`. Blocks never define `space`/`blend` unless they are that kind.
+- New helpers (all blocks): `snare()` (snare/clap envelope), `punch()` (fast kick onset, sharper than
+  `kick()`), `since_snare()`, `anticipation()` (0..1 ramp over the half bar before a drop; 0 after).
+- Motion blocks may tap `prev()` a few times (≤ 5) to react to the image (edges, brightness); get the pixel
+  size from `resolution()`.

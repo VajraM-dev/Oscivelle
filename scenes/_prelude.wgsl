@@ -17,6 +17,7 @@ struct U {
     misc: vec4<f32>,     // hue shift turns, quality (0 draft / 1 final), s since kick, s since drop (1e3 if none)
     p2: vec4<f32>,       // scene params 8..11 (generated looks: backdrop block)
     p3: vec4<f32>,       // scene params 12..15 (generated looks: overlay block)
+    hits: vec4<f32>,     // snare env, punch (fast kick onset), s since snare (1e3 if none), drop anticipation 0..1
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -47,6 +48,10 @@ fn seed() -> f32 { return u.shape.w; }
 fn quality() -> f32 { return u.misc.y; }
 fn since_kick() -> f32 { return u.misc.z; }
 fn since_drop() -> f32 { return u.misc.w; }
+fn snare() -> f32 { return u.hits.x; }
+fn punch() -> f32 { return u.hits.y; }
+fn since_snare() -> f32 { return u.hits.z; }
+fn anticipation() -> f32 { return u.hits.w; }
 
 // Scene param i (0..15), order as declared in the scene's .toml.
 fn P(i: i32) -> f32 {

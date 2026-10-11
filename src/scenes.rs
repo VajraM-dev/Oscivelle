@@ -12,6 +12,10 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+/// The shipped scenes: the only ones the director picks on its own (pinned, like genome V1_BLOCKS).
+/// --keep / --author scenes stay reachable through --scene and markers.
+pub const BUILTIN: [&str; 7] = ["fractal_zoom", "ink_in_water", "kaleidoscope_bloom", "liquid_tunnel", "neon_geometry", "plasma_field", "starfield_warp"];
+
 #[derive(Clone, Debug)]
 pub struct Scene {
     /// File stem, e.g. "liquid_tunnel".

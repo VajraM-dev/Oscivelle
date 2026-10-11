@@ -652,7 +652,7 @@ mod tests {
         }
         let mut u = SceneUniforms::default();
         u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
-        let post = Post { vhs: 1.0, scanlines: 1.0, posterize: 1.0, tint_amount: 1.0, tint: [0.0, 1.0, 0.0] };
+        let post = Post { vhs: 1.0, scanlines: 1.0, posterize: 1.0, tint_amount: 1.0, tint: [0.0, 1.0, 0.0], ..Default::default() };
         let fs = FrameState { scene_a: lay[0].id.clone(), a: u, b: Some((lay[lay.len() - 1].id.clone(), u)), mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post };
         e.step(&fs, Some(1.0)).unwrap();
         let out = device.create_texture(&wgpu::TextureDescriptor {

@@ -64,14 +64,30 @@ const MOTION: (f32, f32) = (0.002, 0.25);
 const MAX_CLIPPED: f32 = 0.25;
 const MAX_GRAIN: f32 = 0.2;
 
+/// Judge acceptance ranges (engine 2: one set per regime).
+#[derive(Clone, Copy, Debug)]
+pub struct Thresholds {
+    pub mean: (f32, f32),
+    pub min_contrast: f32,
+    pub motion: (f32, f32),
+    pub max_clipped: f32,
+    pub max_grain: f32,
+}
+
+pub const V1: Thresholds = Thresholds { mean: MEAN, min_contrast: MIN_CONTRAST, motion: MOTION, max_clipped: MAX_CLIPPED, max_grain: MAX_GRAIN };
+
+/// Not black, static, flooded or noisy by `th`.
+pub fn passes(m: &Metrics, th: &Thresholds) -> bool {
+    (th.mean.0..=th.mean.1).contains(&m.mean)
+        && m.contrast >= th.min_contrast
+        && (th.motion.0..=th.motion.1).contains(&m.motion)
+        && m.clipped <= th.max_clipped
+        && m.grain <= th.max_grain
+}
+
 /// None = rejected; else higher is better (contrast + music lock + some motion).
 pub fn verdict(m: &Metrics) -> Option<f32> {
-    let ok = (MEAN.0..=MEAN.1).contains(&m.mean)
-        && m.contrast >= MIN_CONTRAST
-        && (MOTION.0..=MOTION.1).contains(&m.motion)
-        && m.clipped <= MAX_CLIPPED
-        && m.grain <= MAX_GRAIN;
-    ok.then(|| m.contrast + 2.0 * m.kick_sync.max(0.0) + 4.0 * m.motion.min(0.05))
+    passes(m, &V1).then(|| m.contrast + 2.0 * m.kick_sync.max(0.0) + 4.0 * m.motion.min(0.05))
 }
 
 const W: u32 = 160;
@@ -158,6 +174,7 @@ impl Judge {
             plates: vec![],
             post: None,
             layers: false,
+            engine: 1,
             segments: vec![Segment {
                 start: 0.0,
                 end: analysis.duration,

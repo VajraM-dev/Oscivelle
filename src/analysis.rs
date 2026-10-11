@@ -792,6 +792,7 @@ pub fn analyze(audio: &Path) -> Result<Analysis> {
         curves,
         drops,
         track_changes: changes,
+        snares: Vec::new(),
     })
 }
 
