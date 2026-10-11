@@ -26,6 +26,8 @@ pub struct PlanRequest<'a> {
     pub blocks: Option<&'a Blocks>,
     /// Where generated scenes' .wgsl files live.
     pub gen_dir: &'a std::path::Path,
+    /// Shot changes inside the music (storyboard / --layers); ignored in markers mode.
+    pub shots: &'a [Shot],
 }
 
 // ---------------------------------------------------------------- rng
@@ -274,7 +276,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
@@ -478,6 +480,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         flash: (0.06 * kick + trans_flash + drop_flash).clamp(0.0, 1.0) as f32,
         exposure: 1.0 + 0.1 * energy,
         saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2),
+        post: Post::default(),
     }
 }
 
@@ -605,6 +608,7 @@ mod tests {
             genome_for: None,
             blocks: None,
             gen_dir: Path::new("."),
+            shots: &[],
         };
         let p1 = plan(&req(&[])).unwrap();
         let p2 = plan(&req(&[])).unwrap();
@@ -656,7 +660,7 @@ mod tests {
                 crate::scenes::ParamRange { name: String::new(), min: 2.0, max: 4.0, fixed: false },
             ];
         }
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new(".") };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[] };
         let p = plan(&req).unwrap();
         assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
         let mut flat = p.clone();
@@ -703,6 +707,7 @@ mod tests {
             genome_for: Some(&gen),
             blocks: Some(&blocks),
             gen_dir: Path::new("."),
+            shots: &[],
         };
         let p = plan(&req(&[])).unwrap();
         for s in &p.segments {

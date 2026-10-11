@@ -462,7 +462,7 @@ mod tests {
             u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 0.0, 1.0 / SIM_HZ as f32];
             u.beat[0] = 1.0;
             u.pal = [[1.0, 0.5, 0.2, 1.0]; 4];
-            let fs = FrameState { scene_a: "ok".into(), a: u, b: Some(("ok".into(), u)), mix: 0.5, flash: 0.2, exposure: 1.0, saturation: 1.0 };
+            let fs = FrameState { scene_a: "ok".into(), a: u, b: Some(("ok".into(), u)), mix: 0.5, flash: 0.2, exposure: 1.0, saturation: 1.0, post: Post::default() };
             for i in 0..4 {
                 e.step(&fs, Some(1.0 / (i % 2 + 1) as f32)).unwrap();
             }
@@ -500,7 +500,7 @@ mod tests {
         for m in &blocks.motion {
             for em in &blocks.emitter {
                 for c in &blocks.colour {
-                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: blocks.palettes[0].clone(), params: Default::default() };
+                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: blocks.palettes[0].clone(), params: Default::default(), ..Default::default() };
                     gen.push(crate::genome::write(&g, &blocks, &gen_dir).unwrap());
                     names.push(format!("{} + {} + {}", m.id, em.id, c.id));
                 }

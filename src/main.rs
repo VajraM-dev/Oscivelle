@@ -262,6 +262,7 @@ fn run(cli: Cli) -> Result<()> {
                 genome_for: Some(&evolved),
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
+                shots: &[],
             })?;
             // No judge (e.g. no GPU): the plan above already fell back to hand-made scenes.
             if let Some(Err(e)) = gen.into_inner() {

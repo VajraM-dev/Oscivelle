@@ -146,6 +146,9 @@ impl Judge {
             mode: Mode::Single,
             generated: 0.0,
             vibe: None,
+            plates: vec![],
+            post: None,
+            layers: false,
             segments: vec![Segment {
                 start: 0.0,
                 end: analysis.duration,

@@ -98,7 +98,7 @@ pub fn palette(p: &[String; 4]) -> Result<[[f32; 3]; 4]> {
     Ok([hex(&p[0])?, hex(&p[1])?, hex(&p[2])?, hex(&p[3])?])
 }
 
-fn hex(s: &str) -> Result<[f32; 3]> {
+pub fn hex(s: &str) -> Result<[f32; 3]> {
     let s = s.trim_start_matches('#');
     if s.len() != 6 {
         bail!("bad colour {s}");

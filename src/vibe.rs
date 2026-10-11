@@ -179,7 +179,7 @@ fn look(v: &Value) -> Option<Genome> {
     let s = |k: &str| v[k].as_str().map(String::from);
     let pal: Vec<String> = v["palette"].as_array()?.iter().filter_map(|c| c.as_str().map(String::from)).collect();
     let params = v["params"].as_array().into_iter().flatten().filter_map(|p| Some((p["key"].as_str()?.to_string(), p["value"].as_f64()? as f32))).collect();
-    Some(Genome { motion: s("motion")?, emitter: s("emitter")?, colour: s("colour")?, palette: pal.try_into().ok()?, params })
+    Some(Genome { motion: s("motion")?, emitter: s("emitter")?, colour: s("colour")?, palette: pal.try_into().ok()?, params, ..Default::default() })
 }
 
 /// Valid looks only (known blocks, parseable palette), with unknown or non-finite param keys dropped.

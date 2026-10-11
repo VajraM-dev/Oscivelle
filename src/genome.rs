@@ -1,13 +1,13 @@
 //! Generated scenes: a genome picks one motion, emitter and colour block (scenes/blocks/) plus a
 //! palette, and compiles to an ordinary scene (.wgsl), so engine/preview/render are unchanged.
 use crate::scenes::{ParamRange, Scene};
-use crate::types::fnv1a;
+use crate::types::{fnv1a, Post};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Genome {
     pub motion: String,
     pub emitter: String,
@@ -17,6 +17,23 @@ pub struct Genome {
     /// Tuned param values, key "<block_id>.<param_name>", in the param's own units.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f32>,
+    /// Layer blocks ("" = none), drawn behind / over the feedback in a separate pass (`layers_wgsl`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub backdrop: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub overlay: String,
+    /// Plan plate index `img()` shows; None = no picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate: Option<u32>,
+    /// Feedback strength over the backdrop (layer looks), 0..1.5; None = 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<f32>,
+    /// Text for overlay blocks that draw it (font.rs charset; anything else becomes a space).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    /// Finishing look.
+    #[serde(default, skip_serializing_if = "Post::is_clean")]
+    pub post: Post,
 }
 
 impl Genome {
@@ -280,6 +297,7 @@ pub fn random(blocks: &Blocks, r: u64) -> Genome {
         colour: nth_id(&blocks.colour, piece(2)),
         palette: blocks.palettes[piece(3) % blocks.palettes.len()].clone(),
         params: BTreeMap::new(),
+        ..Default::default()
     }
 }
 
@@ -297,7 +315,7 @@ mod tests {
 
     fn genome() -> Genome {
         let pal = ["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()];
-        Genome { motion: "motion_ink".into(), emitter: "emit_rings".into(), colour: "colour_hue".into(), palette: pal, params: BTreeMap::new() }
+        Genome { motion: "motion_ink".into(), emitter: "emit_rings".into(), colour: "colour_hue".into(), palette: pal, params: BTreeMap::new(), ..Default::default() }
     }
 
     #[test]

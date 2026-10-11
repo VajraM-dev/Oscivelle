@@ -159,6 +159,15 @@ pub struct Plan {
     pub vibe: Option<String>,
     /// Scene changes (one per track/marker); contiguous, first starts at 0, last ends at duration.
     pub segments: Vec<Segment>,
+    /// Plates (pictures) the plan's looks can show: --image files, then AI-made ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plates: Vec<PathBuf>,
+    /// --look override for the whole video (set on every run; None = each look's own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post: Option<Post>,
+    /// Made with --layers.
+    #[serde(default)]
+    pub layers: bool,
 }
 
 impl Plan {
@@ -220,7 +229,7 @@ pub enum TransitionKind {
     Morph,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Transition {
     pub kind: TransitionKind,
     /// Seconds (Morph only; centred on segment start).
@@ -234,6 +243,76 @@ pub struct Variation {
     pub params: Vec<f32>,
     /// Palette hue rotation, turns (0..1).
     pub hue_shift: f32,
+}
+
+/// Plate (picture) size: every image is centre-cropped and fitted to this (3:2), RGBA8 sRGB.
+pub const PLATE_W: u32 = 1536;
+pub const PLATE_H: u32 = 1024;
+/// Scene param slots (SceneUniforms p0..p3). Hand-made scenes use ≤ 8 in practice; layered genomes 14.
+pub const MAX_PARAMS: usize = 16;
+
+/// Finishing look applied by the finish pass. All zero = the clean default (output unchanged).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct Post {
+    /// Tape wobble, chroma bleed and a rolling tracking band, 0..1.
+    #[serde(default)]
+    pub vhs: f32,
+    /// Scanline darkening, 0..1.
+    #[serde(default)]
+    pub scanlines: f32,
+    /// Colour banding, 0 off .. 1 = 4 levels per channel.
+    #[serde(default)]
+    pub posterize: f32,
+    /// Monochrome tint strength towards `tint`, 0..1.
+    #[serde(default)]
+    pub tint_amount: f32,
+    /// Linear RGB.
+    #[serde(default)]
+    pub tint: [f32; 3],
+}
+
+impl Post {
+    pub fn is_clean(&self) -> bool {
+        *self == Post::default()
+    }
+
+    pub fn lerp(&self, o: &Post, f: f32) -> Post {
+        let l = |a: f32, b: f32| a + (b - a) * f;
+        Post {
+            vhs: l(self.vhs, o.vhs),
+            scanlines: l(self.scanlines, o.scanlines),
+            posterize: l(self.posterize, o.posterize),
+            tint_amount: l(self.tint_amount, o.tint_amount),
+            tint: [0, 1, 2].map(|k| l(self.tint[k], o.tint[k])),
+        }
+    }
+}
+
+/// `--look` presets.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Look {
+    Clean,
+    Vhs,
+    Crt,
+    Mono,
+}
+
+impl Look {
+    pub fn post(self) -> Post {
+        match self {
+            Look::Clean => Post::default(),
+            Look::Vhs => Post { vhs: 0.7, scanlines: 0.25, ..Default::default() },
+            Look::Crt => Post { scanlines: 0.7, vhs: 0.15, ..Default::default() },
+            Look::Mono => Post { tint_amount: 0.85, tint: [0.15, 1.0, 0.25], posterize: 0.5, scanlines: 0.3, ..Default::default() },
+        }
+    }
+}
+
+/// A requested scene change inside the music (storyboard or --layers); the director snaps it to a phrase.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Shot {
+    pub time: f64,
+    pub transition: Transition,
 }
 
 // ---------------------------------------------------------------- per frame
@@ -259,6 +338,9 @@ pub struct SceneUniforms {
     /// x = hue shift (turns), y = quality (0 draft, 1 final),
     /// z = seconds since last kick, w = seconds since last drop (large if none yet)
     pub misc: [f32; 4],
+    /// Scene params 8..11 (backdrop block), 12..15 (overlay block); unused = 0.
+    pub p2: [f32; 4],
+    pub p3: [f32; 4],
 }
 
 /// Everything the renderer needs for one simulation step.
@@ -276,4 +358,6 @@ pub struct FrameState {
     pub exposure: f32,
     /// Saturation multiplier (drains with tension, ~0.6..1.2).
     pub saturation: f32,
+    /// Finishing look (finish pass).
+    pub post: Post,
 }
