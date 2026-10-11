@@ -1,0 +1,11 @@
+kind = "motion"
+description = "Stutter: the frame holds still between kicks, then jumps a whole tile in a re-rolled direction on each kick, like a glitching freeze-frame"
+[[param]]
+name = "tiles"      # tiles per frame height (the jump is one tile)
+min = 2.0
+max = 6.0
+fixed = true
+[[param]]
+name = "persistence"
+min = 0.9
+max = 0.97

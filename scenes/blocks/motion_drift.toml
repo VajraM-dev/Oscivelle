@@ -1,0 +1,14 @@
+kind = "motion"
+description = "Drift: the whole frame slides one way (seeded direction) and wraps around, stepping ahead on each kick; no zoom, no spin"
+[[param]]
+name = "speed"      # px per step
+min = 0.5
+max = 2.5
+[[param]]
+name = "kick_step"  # extra px per step at a kick onset
+min = 4.0
+max = 14.0
+[[param]]
+name = "persistence"
+min = 0.9
+max = 0.975

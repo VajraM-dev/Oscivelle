@@ -1,0 +1,10 @@
+kind = "motion"
+description = "Still: the camera holds; nothing moves but what the emitter draws, trails fade in place and kicks cut them short"
+[[param]]
+name = "persistence"
+min = 0.85
+max = 0.96
+[[param]]
+name = "kick_cut"   # share of the trail a kick onset removes
+min = 0.0
+max = 0.25

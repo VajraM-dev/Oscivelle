@@ -1,0 +1,10 @@
+kind = "motion"
+description = "Sink: the frame drains slowly inward toward an off-centre point that jumps every quarter phrase; no spin"
+[[param]]
+name = "pull"       # inward zoom per step
+min = 0.001
+max = 0.004
+[[param]]
+name = "persistence"
+min = 0.9
+max = 0.97

@@ -1,0 +1,6 @@
+kind = "space"
+description = "Pixel: the plane snaps to a coarse grid of square cells (a blocky mosaic); the cell size re-rolls eight times a phrase and shrinks on drops"
+[[param]]
+name = "cells"      # cells per unit height
+min = 10.0
+max = 36.0
