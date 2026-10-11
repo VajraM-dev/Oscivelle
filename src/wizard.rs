@@ -27,6 +27,7 @@ pub struct Answers {
     pub layers: bool,
     pub look: Option<Look>,
     pub images: Vec<PathBuf>,
+    pub engine: Option<u32>,
 }
 
 fn val<T: ValueEnum>(t: &T) -> String {
@@ -77,6 +78,9 @@ pub fn to_args(a: &Answers) -> Vec<String> {
     }
     for i in &a.images {
         v.extend(["--image".into(), i.display().to_string()]);
+    }
+    if let Some(e) = a.engine {
+        v.extend(["--engine".into(), e.to_string()]);
     }
     v
 }
@@ -159,6 +163,13 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
             }
         } else {
             println!("\x1b[2mTip: run \"visualiser --setup-ai\" to let AI design visuals from a description.\x1b[0m");
+        }
+
+        // The vibe evolves engine-1 looks, so the engine is only asked on the core path.
+        if a.vibe.is_none() {
+            let engines = vec!["Variety — new folds, moods, fractals, glitch (recommended)", "Classic — the original looks"];
+            let i = Select::new("Visuals?", engines).with_starting_cursor(usize::from(d.engine == Some(1))).raw_prompt()?.index;
+            a.engine = Some(if i == 1 { 1 } else { 2 });
         }
 
         if (a.layers || a.vibe.is_some())
@@ -301,10 +312,11 @@ mod tests {
             layers: true,
             look: Some(Look::Vhs),
             images: vec!["a.png".into()],
+            engine: Some(1),
             ..Default::default()
         };
         let args = to_args(&a);
-        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain --layers --look vhs --image a.png");
+        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain --layers --look vhs --image a.png --engine 1");
         let cli = crate::Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args)).unwrap();
         assert_eq!(cli.audio.as_deref(), Some(std::path::Path::new("C:/My Music/mix.flac")));
         assert_eq!(cli.mode, Some(Mode::Single));
@@ -315,6 +327,7 @@ mod tests {
         assert!(cli.no_grain && !cli.no_titles);
         assert!(cli.layers && cli.look == Some(Look::Vhs));
         assert_eq!(cli.image, vec![PathBuf::from("a.png")]);
+        assert_eq!(cli.engine, Some(1));
 
         let live = Answers { audio: "mix.flac".into(), start: Some("1:00".into()), quality: Some(Quality::Draft), ..Default::default() };
         let cli = crate::Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(to_args(&live))).unwrap();

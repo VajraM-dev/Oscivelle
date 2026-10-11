@@ -1,0 +1,12 @@
+kind = "space"
+description = "Turbine: the plane is cut into N rotated (unmirrored) copies around the centre and into repeating rings"
+[[param]]
+name = "copies"
+min = 3.0
+max = 9.0
+fixed = true
+[[param]]
+name = "rings"      # rings per unit radius
+min = 1.0
+max = 4.0
+fixed = true

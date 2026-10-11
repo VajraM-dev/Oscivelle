@@ -1,0 +1,12 @@
+kind = "space"
+description = "Hyperbolic: the plane folds into a {p,q} tiling of the Poincare disk (Escher's Circle Limit), drifting slowly"
+[[param]]
+name = "tiling"     # 0 {4,5}, 1 {5,4}, 2 {3,7}, 3 {6,4}
+min = 0.0
+max = 3.99
+fixed = true
+[[param]]
+name = "drift"      # rad/s of the Mobius drift
+min = 0.05
+max = 0.2
+fixed = true

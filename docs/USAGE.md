@@ -15,6 +15,7 @@
 - [Writing scenes](#writing-scenes)
 - [Generated scenes](#generated-scenes---generated---keep)
 - [Motion graphics](#motion-graphics---layers---image---look)
+- [Engine 2](#engine-2---engine-2)
 - [AI features](#ai-features---setup-ai---vibe---forget-ai)
 - [Writing scenes with --author](#writing-scenes-with---author)
 - [Scene blocks](#scene-blocks)
@@ -59,6 +60,7 @@ Run `visualiser.exe` with no arguments, by double-clicking it or from the Start 
 - **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
 - **Motion graphics** (generated styles only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only.
 - **Who designs the visuals** is asked only when an AI service is set up. "Core engine only" is free and works offline. "Let AI design it" asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. Without an AI service it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
+- **Visuals?** (generated styles, core engine only): Variety (recommended, `--engine 2`: new folds, moods, fractals, glitch) or Classic (`--engine 1`: the original looks). See [Engine 2](#engine-2---engine-2).
 - **Your own pictures** is asked after motion graphics or an AI description: pick PNG/JPG files (`--image`, up to 8). Full-frame photos become backdrops, transparent PNGs float as cut-outs.
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
@@ -178,7 +180,7 @@ To keep a segment you like, set `"locked": true` on it in the plan file. See [Ed
 | `--replan` | Ignores the saved plan's **unlocked** segments and plans again from the analysis. Locked segments are kept. |
 | `--plan-only` | Stops after writing the analysis, plan and chapters. Doesn't render. Use it to inspect or edit the plan first. |
 
-**When is the saved plan reused?** When all of these are true: the seed and mode match the saved plan, and none of `--markers`, `--reroll`, `--replan`, `--reanalyse` or `--scene` are given. Otherwise a new plan is made. Locked segments always carry over.
+**When is the saved plan reused?** When all of these are true: the seed, mode and `--pool` match the saved plan, and none of `--markers`, `--reroll`, `--replan`, `--reanalyse` or `--scene` are given. Otherwise a new plan is made. Locked segments always carry over.
 
 ### Developer tools
 
@@ -515,6 +517,8 @@ visualiser.exe set.flac --keep 3
 ```
 The scene is written to `scenes\gen_<id>.wgsl` and `.toml`. After that it is a normal hand-editable scene (see [Writing scenes](#writing-scenes)) you can use with `--scene`, `@scene_id` or in the plan.
 
+**Auto picks stay on the shipped scenes.** The director only picks the 7 hand-made scenes on its own (Auto, Single and `--reroll`), so a seed gives the same video however many scenes you keep or author. Kept and `--author` scenes are reachable by name (`--scene`, `@scene_id`, the plan). To let the director pick them too, add `--pool all`; this changes which scenes your seeds pick, is saved in the plan (a plain re-run keeps it) and `--pool builtin` switches back.
+
 **Known limit:** scoring runs on your GPU, so a different GPU may pick a different scene when it plans again. A saved plan always renders the same.
 
 ---
@@ -538,6 +542,41 @@ Layers put motion graphics on top of the generated scenes' feedback visuals. Eve
 visualiser.exe song.wav --replan --layers --preview 1:00 --quality draft
 visualiser.exe song.wav --replan --layers --image clouds.jpg --look vhs --preview 1:00 --quality draft
 visualiser.exe song.wav --replan --layers --look mono --preview 1:00 --quality draft
+```
+
+---
+
+## Engine 2: `--engine 2`
+
+The default generator for new projects. It makes every `--seed` a structurally different piece. Without AI, each retry changes the fold, motion, emitter, blend, mood and palette together.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--engine <N>` | `1`, `2` | the saved plan's value, else `2` | `2` evolves generated scenes with the engine-2 parts below. `1` = the original (classic) looks. |
+
+What it adds:
+
+- **Space folds:** the plane is folded (mirrors, kaleidoscopes, hyperbolic folds) before the motion and the emitter see it, so trails and shapes inherit the symmetry.
+- **Blend modes:** how the new emission is laid onto the fading previous frame.
+- **Six moods:** `calm`, `dark`, `mono`, `sparse`, `glitch` and `maximal`. A mood sets how fast trails fade, how hard the emitter is driven and how the finish pass looks. The judge uses each mood's own brightness and motion limits, so a `dark` look isn't rejected for being dark.
+- **19 new blocks** in `sceneslocks\`: space folds, feedback operators and emitters. See [Scene blocks](#scene-blocks).
+- **Onset hits:** snares and kicks drive the visuals directly (a snare envelope, a sharp kick punch, time since the last snare), not only the smoothed kick.
+- **Drop build-ups:** the picture darkens half a bar before a drop and explodes on it.
+- **Glitch looks:** strobe, RGB split, tear and invert, on moods `glitch` and `maximal` only. They are gated on downbeats and snares.
+
+Notes:
+
+- `--generated` still sets how many segments are generated. Use `--generated 1` to make every segment engine 2.
+- **New projects use engine 2.** Projects with a saved plan keep their engine (plans saved before engine 2 existed are engine 1). `--engine 1` forces the classic looks.
+- The engine is saved in the plan, so a plain re-run (and a render from the saved plan) keeps using it. Changing `--engine` makes a new plan.
+- The guided mode asks **Visuals?** (Variety = engine 2, Classic = engine 1) when the core engine designs the visuals.
+- **Engine 1 is unchanged.** `--engine 1` output is the same as before. New blocks, AI blocks and `--keep` scenes never alter engine-1 seeds.
+- **Re-analysis:** after upgrading, each project is analysed once again (the analysis format gained snare onsets). This applies to all runs, not just engine 2.
+- **Flash limit:** strobe and invert flashes are limited to at most one per bar, under the 3 Hz limit in WCAG.
+- `--vibe` keeps engine-1 looks.
+
+```
+visualiser.exe song.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed 3
 ```
 
 ---
@@ -588,6 +627,7 @@ visualiser.exe track.wav --author "slow aurora curtains that flare on the kick"
   visualiser.exe track.wav --dev --scene <id>
   ```
 - Nothing is rendered. If you don't like the result, delete the two files.
+- Like `--keep` scenes, it is only auto-picked with `--pool all` (see [Generated scenes](#generated-scenes---generated---keep)).
 - With no key set up, or after 3 failed tries, it stops with an error.
 
 ---

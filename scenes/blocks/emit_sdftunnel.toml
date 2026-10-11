@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "SDF tunnel: flying down a raymarched tube carved with repeating rings and studs; kicks pulse the rings"
+[[param]]
+name = "spacing"    # ring spacing along the tube
+min = 0.8
+max = 2.0
+[[param]]
+name = "radius"
+min = 0.9
+max = 1.6
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

@@ -1,0 +1,16 @@
+kind = "emitter"
+description = "Mandelbox: raymarched box-fold + sphere-fold fractal; negative scale = spiky shells, positive = blocky towers"
+[[param]]
+name = "scale_gene" # sign picks the family, size the scale (|s| = 1.8..2.6)
+min = -1.0
+max = 1.0
+fixed = true
+[[param]]
+name = "glow"
+min = 0.6
+max = 1.4
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

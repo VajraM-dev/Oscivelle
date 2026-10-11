@@ -8,6 +8,7 @@ struct F {
     d1: vec4<f32>, // beat phase, bar phase, phrase phase, drop env
     p0: vec4<f32>, // vhs, scanlines, posterize, tint amount (all 0 = clean)
     p1: vec4<f32>, // tint rgb (sRGB-encoded on the CPU)
+    p2: vec4<f32>, // strobe, rgb split, tear, invert (0 = off; the director gates them on onsets)
 };
 
 @group(0) @binding(0) var<uniform> f: F;
@@ -98,14 +99,23 @@ fn vhs_uv(uv: vec2<f32>, amt: f32, t: f32, frame: u32) -> vec2<f32> {
     return vec2<f32>(uv.x + amt * (0.0012 * wobble + 0.012 * band * line), uv.y);
 }
 
+// Tear: a few of 24 horizontal bands jump sideways (re-rolled every frame while the snare rings).
+fn tear_uv(uv: vec2<f32>, amt: f32, frame: u32) -> vec2<f32> {
+    let band = floor(uv.y * 24.0);
+    let on = step(0.7, rnd(vec2<f32>(1.0, band), frame, 6u));
+    return vec2<f32>(uv.x + amt * 0.08 * (rnd(vec2<f32>(0.0, band), frame, 5u) - 0.5) * on, uv.y);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let frame = u32(f.r.z);
     var uv = in.uv;
     if (f.p0.x > 0.0) { uv = vhs_uv(in.uv, f.p0.x, f.b.x, frame); }
+    if (f.p2.z > 0.0) { uv = tear_uv(uv, f.p2.z, frame); }
     let p = uv - 0.5;
     // Gentle chromatic aberration, growing towards the edges; VHS adds a horizontal chroma bleed.
-    let ca = p * dot(p, p) * 0.012 + vec2<f32>(f.p0.x * 0.004, 0.0);
+    var ca = p * dot(p, p) * 0.012 + vec2<f32>(f.p0.x * 0.004, 0.0);
+    if (f.p2.y > 0.0) { ca += vec2<f32>(f.p2.y * 0.015, 0.0); }
     // Full supersample filter on green only; the fringed red/blue get a single tap each.
     let r = textureSampleLevel(src, samp, uv + ca, 0.0).r;
     let b = textureSampleLevel(src, samp, uv - ca, 0.0).b;
@@ -123,6 +133,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let levels = mix(64.0, 4.0, f.p0.z);
         c = floor(c * levels + 0.5) / levels;
     }
+    if (f.p2.w > 0.0) { c = mix(c, vec3<f32>(1.0) - c, f.p2.w); }
+    if (f.p2.x > 0.0) { c = mix(c, vec3<f32>(1.0), 0.7 * f.p2.x); }
     // Scanlines: whole-pixel, pitch 2h px with h = height / 1080 rows dark (one dark row in two at 1080p).
     if (f.p0.y > 0.0) {
         let h = max(1.0, round(f.r.y / 1080.0));

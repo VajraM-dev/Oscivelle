@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Fractal cathedral: a raymarched 3D tetrahedral IFS seen from an orbiting camera, glowing by its fold orbit"
+[[param]]
+name = "scale"
+min = 1.8
+max = 2.3
+[[param]]
+name = "twist"      # rotation per fold
+min = 0.0
+max = 0.6
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

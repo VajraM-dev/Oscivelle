@@ -28,6 +28,10 @@ pub struct PlanRequest<'a> {
     pub gen_dir: &'a std::path::Path,
     /// Shot changes inside the music (storyboard / --layers); ignored in markers mode.
     pub shots: &'a [Shot],
+    /// Visual engine (Plan.engine).
+    pub engine: u32,
+    /// Auto-pick pool (Plan.pool).
+    pub pool: Pool,
 }
 
 // ---------------------------------------------------------------- rng
@@ -63,6 +67,9 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     if req.scenes.is_empty() {
         bail!("no scenes");
     }
+    // Auto picks come from the shipped scenes only (unless --pool all); a library without them (tests) uses all.
+    let builtin: Vec<Scene> = req.scenes.iter().filter(|s| crate::scenes::is_builtin(&s.id)).cloned().collect();
+    let pool: &[Scene] = if builtin.is_empty() || req.pool == Pool::All { req.scenes } else { &builtin };
     let bar = bar_len(a);
     let near_drop = |t: f64| a.drops.iter().any(|d| (d.time - t).abs() <= bar);
     let known = |id: &Option<String>| match id {
@@ -182,7 +189,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         .iter()
         .map(|b| req.previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
         .collect();
-    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe));
+    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine, req.pool));
     let locked = |i: usize| prev[i].filter(|s| s.locked);
     let kept = |i: usize| prev[i].filter(|_| same_plan);
     // Source name mixed in so different files get different takes at the same seed.
@@ -208,7 +215,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                 None => {
                     let recent: Vec<&str> = scenes.iter().rev().take(3).map(|s| s.as_str()).collect();
                     let hard: Vec<&str> = scenes.last().map(|s| s.as_str()).into_iter().collect();
-                    (pick(req.scenes, &recent, &hard, hash(base_seed(i), 1)), None)
+                    (pick(pool, &recent, &hard, hash(base_seed(i), 1)), None)
                 }
             },
         };
@@ -223,7 +230,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             // Saved mods index the saved scene's params; a forced scene gets its own.
             // A forced scene also drops the genome (force always wins).
             let (mods, genome) = match req.force_scene.filter(|&f| f != s.scene) {
-                Some(f) => (req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed)), None),
+                Some(f) => (req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed, req.engine)), None),
                 None => (s.mods.clone(), s.genome.clone()),
             };
             segments.push(Segment { end: ends[i], scene, mods, genome, ..s.clone() });
@@ -248,7 +255,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                     let mut avoid: Vec<&str> = scenes[i.saturating_sub(3)..i].iter().map(|s| s.as_str()).collect();
                     avoid.extend(&neighbours);
                     avoid.push(&scenes[i]);
-                    pick(req.scenes, &avoid, &neighbours, hash(seed, 1))
+                    pick(pool, &avoid, &neighbours, hash(seed, 1))
                 }
             };
             // Later re-rolled neighbours must see this choice, not the old one.
@@ -272,13 +279,13 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             start: b.start,
             end: ends[i],
             palette: (hash(seed, 2) % sc.palettes.len().max(1) as u64) as usize,
-            variations: variations(a, sc, seed, b.start, ends[i], single),
+            variations: variations(a, sc, seed, b.start, ends[i], single, req.engine),
             scene,
             seed,
             locked: false,
             title: b.title.clone().or_else(|| kept(i).and_then(|s| s.title.clone())),
             transition_in: if i == 0 { CUT } else { b.transition },
-            mods: mods(sc, seed),
+            mods: mods(sc, seed, req.engine),
             genome,
         });
     }
@@ -290,7 +297,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false, engine: req.engine, pool: req.pool })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
@@ -317,7 +324,7 @@ fn snap(a: &Analysis, t: f64, bar: f64) -> f64 {
         .unwrap_or(t)
 }
 
-fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single: bool) -> Vec<Variation> {
+fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single: bool, engine: u32) -> Vec<Variation> {
     let min_bars = if single { 8 } else { 16 };
     // (time, is_drop); a drop on a phrase boundary counts as a drop.
     let mut marks: Vec<(f64, bool)> = a
@@ -339,7 +346,12 @@ fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single:
         let mut rng = Rng(hash(seed, 100 + k as u64));
         let (step, hue_step) = if drop { (0.6, 0.25) } else { (0.25, 0.08) };
         for (v, p) in params.iter_mut().zip(&sc.params) {
-            *v = p.nudge(*v, rng.signed() * step);
+            // rng drawn either way so later picks don't shift; engine 2 holds fixed (structural) params,
+            // engine 1 keeps its frozen behaviour.
+            let amt = rng.signed() * step;
+            if engine < 2 || !p.fixed {
+                *v = p.nudge(*v, amt);
+            }
         }
         hue = (hue + rng.signed() * hue_step).rem_euclid(1.0);
         out.push(Variation { time, params: params.clone(), hue_shift: hue });
@@ -358,11 +370,22 @@ fn param_mut(u: &mut SceneUniforms, j: usize) -> &mut f32 {
     &mut row[j % 4]
 }
 
-const SOURCES: [ModSource; 7] =
-    [ModSource::Kick, ModSource::Bass, ModSource::Mid, ModSource::High, ModSource::Energy, ModSource::Tension, ModSource::Drop];
+/// Engine 2 adds the onset sources (appended, so engine-1 picks are unchanged).
+const SOURCES: [ModSource; 9] = [
+    ModSource::Kick,
+    ModSource::Bass,
+    ModSource::Mid,
+    ModSource::High,
+    ModSource::Energy,
+    ModSource::Tension,
+    ModSource::Drop,
+    ModSource::Snare,
+    ModSource::Punch,
+];
 
 /// 1-2 audio routings onto random non-fixed params (own rng stream, so scene/palette/variation picks are unchanged).
-fn mods(sc: &Scene, seed: u64) -> Vec<Mod> {
+fn mods(sc: &Scene, seed: u64, engine: u32) -> Vec<Mod> {
+    let sources = &SOURCES[..if engine >= 2 { 9 } else { 7 }];
     let free: Vec<usize> = (0..sc.params.len()).filter(|&i| !sc.params[i].fixed).collect();
     if free.is_empty() {
         return Vec::new();
@@ -371,7 +394,7 @@ fn mods(sc: &Scene, seed: u64) -> Vec<Mod> {
     let mut out: Vec<Mod> = Vec::new();
     for _ in 0..1 + rng.next() % 2 {
         let param = free[(rng.next() % free.len() as u64) as usize];
-        let source = SOURCES[(rng.next() % SOURCES.len() as u64) as usize];
+        let source = sources[(rng.next() % sources.len() as u64) as usize];
         let depth = rng.signed().signum() * (0.15 + 0.25 * (rng.signed() * 0.5 + 0.5));
         if !out.iter().any(|m| m.param == param) {
             out.push(Mod { param, source, depth });
@@ -391,21 +414,19 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     let i = segs.partition_point(|s| s.start <= t).saturating_sub(1);
 
     // Audio-driven part, shared by both scenes of a morph.
-    let k = a.kicks.partition_point(|k| k.time <= t + 0.01);
-    let kick = a.kicks[k.saturating_sub(4)..k]
-        .iter()
-        .map(|kk| {
-            let dt = t - kk.time;
-            let env = if dt < 0.0 { 1.0 + dt / 0.01 } else { (-dt / 0.12).exp() };
-            kk.strength as f64 * env
-        })
-        .fold(0.0, f64::max);
-    let since_kick = a.kicks[..a.kicks.partition_point(|k| k.time <= t)].last().map_or(1e3, |k| t - k.time);
+    let kick = onset_env(&a.kicks, t, 0.12);
+    let since_kick = since(&a.kicks, t, |k| k.time);
     let d = a.drops.partition_point(|d| d.time <= t);
     let (drop_env, drop_dt) = match d.checked_sub(1).map(|j| a.drops[j]) {
         Some(dr) => (dr.strength as f64 * (-(t - dr.time) / (2.0 * bar)).exp(), t - dr.time),
         None => (0.0, f64::INFINITY),
     };
+    // Half a bar before each drop: 0 → drop strength (engine 2 darkens and drains towards it; shaders squeeze).
+    let antic = a.drops.get(d).map_or(0.0, |dr| {
+        let pre = dr.time - t;
+        if pre > 0.0 && pre < bar / 2.0 { smoothstep((1.0 - pre / (bar / 2.0)) as f32) * dr.strength } else { 0.0 }
+    });
+    let snare = onset_env(&a.snares, t, 0.09);
     let c = &a.curves;
     let curve = |v: &[f32]| sample(v, c.rate, t);
     let (energy, tension) = (curve(&c.energy), curve(&c.tension));
@@ -420,6 +441,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         bands: [curve(&c.sub), curve(&c.bass), curve(&c.mid), curve(&c.high)],
         shape: [energy, tension, drop_env as f32, 0.0],
         misc: [0.0, if quality == Quality::Final { 1.0 } else { 0.0 }, since_kick as f32, drop_dt.min(1e3) as f32],
+        hits: [snare as f32, onset_env(&a.kicks, t, 0.045) as f32, since(&a.snares, t, |k| k.time).min(1e3) as f32, antic],
         ..Default::default()
     };
 
@@ -456,6 +478,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             ModSource::Energy => base.shape[0] - 0.5,
             ModSource::Tension => base.shape[1],
             ModSource::Drop => base.shape[2],
+            ModSource::Snare => base.hits[0],
+            ModSource::Punch => base.hits[1],
         };
         for m in &s.mods {
             // Scenes have ≤ MAX_PARAMS params (checked at load); a hand-edited plan may name a missing or fixed one.
@@ -492,21 +516,33 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         .get(i)
         .filter(|s| s.transition_in.kind == TransitionKind::Flash && t >= s.start)
         .map_or(0.0, |s| (1.0 - (t - s.start) / 0.4).max(0.0).powi(2));
-    let drop_flash = if drop_dt < beat_len { 0.4 * drop_env } else { 0.0 };
+    let v2 = plan.engine >= 2;
+    let drop_flash = if drop_dt < beat_len { (if v2 { 0.8 } else { 0.4 }) * drop_env } else { 0.0 };
     // Finishing look: --look wins, else the segment's (blended through a morph).
     let post_of = |s: &Segment| plan.post.or_else(|| s.genome.as_ref().map(|g| g.post)).unwrap_or_default();
-    let post = match morph {
+    let mut post = match morph {
         Some((j, m)) => post_of(&segs[j - 1]).lerp(&post_of(&segs[j]), m),
         None => segs.get(i).map(post_of).unwrap_or_default(),
     };
+    if post.strobe + post.invert + post.rgb_split + post.tear > 0.0 {
+        // Flashes (strobe, invert) only on downbeats: ≤ 1 per bar, under the 3 Hz flash limit (WCAG 2.3.1)
+        // below 720 BPM. Displacement glitches (split, tear) ride the snares.
+        let since_down = since(&a.downbeats, t, |&x| x);
+        let down = (-since_down / 0.08).exp() as f32;
+        post.strobe *= down;
+        post.invert *= down;
+        post.rgb_split *= snare as f32;
+        post.tear *= snare as f32;
+    }
+    let dark = if v2 { antic } else { 0.0 };
     FrameState {
         scene_a,
         a: ua,
         b,
         mix,
         flash: (0.06 * kick + trans_flash + drop_flash).clamp(0.0, 1.0) as f32,
-        exposure: 1.0 + 0.1 * energy,
-        saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2),
+        exposure: (1.0 + 0.1 * energy) * (1.0 - 0.85 * dark),
+        saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2) * (1.0 - 0.8 * dark),
         post,
     }
 }
@@ -514,6 +550,24 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
 fn smoothstep(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
+}
+
+/// Strongest envelope of the last 4 onsets at `t`: 10 ms attack, exponential decay `decay` s.
+fn onset_env(xs: &[Kick], t: f64, decay: f64) -> f64 {
+    let k = xs.partition_point(|k| k.time <= t + 0.01);
+    xs[k.saturating_sub(4)..k]
+        .iter()
+        .map(|kk| {
+            let dt = t - kk.time;
+            let env = if dt < 0.0 { 1.0 + dt / 0.01 } else { (-dt / decay).exp() };
+            kk.strength as f64 * env
+        })
+        .fold(0.0, f64::max)
+}
+
+/// Seconds since the last of `xs` (by `time`) at or before `t` (1e3 if none).
+fn since<T>(xs: &[T], t: f64, time: impl Fn(&T) -> f64) -> f64 {
+    xs[..xs.partition_point(|x| time(x) <= t)].last().map_or(1e3, |x| t - time(x))
 }
 
 /// Linear interpolation into a curve sampled at `rate` Hz.
@@ -599,6 +653,7 @@ mod tests {
             track_changes: (1..6)
                 .map(|k| TrackChange { time: k as f64 * 96.0, confidence: 0.9, kind: ChangeKind::Blend, blend_len: 8.0 })
                 .collect(),
+            snares: vec![],
         }
     }
 
@@ -632,6 +687,8 @@ mod tests {
             blocks: None,
             gen_dir: Path::new("."),
             shots: &[],
+            engine: 1,
+            pool: Default::default(),
         };
         let p1 = plan(&req(&[])).unwrap();
         let p2 = plan(&req(&[])).unwrap();
@@ -683,7 +740,7 @@ mod tests {
                 crate::scenes::ParamRange { name: String::new(), min: 2.0, max: 4.0, fixed: false },
             ];
         }
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[] };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1, pool: Pool::Builtin };
         let p = plan(&req).unwrap();
         assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
         let mut flat = p.clone();
@@ -697,6 +754,10 @@ mod tests {
             moved |= f.a.p0[1] != frame_state(&flat, &a, &scenes, t, 64, 64, Quality::Draft).a.p0[1];
         }
         assert!(moved);
+        // Engine 2 holds a fixed param at its first draw across phrase/drop variations.
+        let p2 = plan(&PlanRequest { engine: 2, ..req }).unwrap();
+        assert!(p2.segments.iter().all(|s| s.variations.iter().all(|v| v.params[0] == s.variations[0].params[0])));
+        assert!(p2.segments.iter().any(|s| s.variations.len() > 1));
     }
 
     #[test]
@@ -728,6 +789,8 @@ mod tests {
             blocks: None,
             gen_dir: Path::new("."),
             shots: &shots,
+            engine: 1,
+            pool: Default::default(),
         };
         let p = plan(&req).unwrap();
         assert_eq!(p.segments.len(), 2);
@@ -753,6 +816,7 @@ mod tests {
             colour: vec![block("c0")],
             backdrop: vec![],
             overlay: vec![],
+            space: vec![],
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
         let gen = |_, _, r| Some(genome::random(&blocks, r));
@@ -771,6 +835,8 @@ mod tests {
             blocks: Some(&blocks),
             gen_dir: Path::new("."),
             shots: &[],
+            engine: 1,
+            pool: Default::default(),
         };
         let p = plan(&req(&[])).unwrap();
         for s in &p.segments {
@@ -785,5 +851,62 @@ mod tests {
         // A forced scene wins over generation.
         let p3 = plan(&PlanRequest { force_scene: Some("s1"), ..req(&[]) }).unwrap();
         assert!(p3.segments.iter().all(|s| s.genome.is_none() && s.scene == "s1"));
+    }
+
+    /// Kept/authored scenes are auto-picked only with --pool all.
+    #[test]
+    fn pool_all_admits_non_builtin_scenes() {
+        let a = test_analysis();
+        let mut scenes = test_scenes();
+        scenes[0].id = "fractal_zoom".into();
+        scenes[1].id = "ink_in_water".into();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1, pool: Pool::Builtin };
+        assert!(plan(&req).unwrap().segments.iter().all(|s| crate::scenes::is_builtin(&s.scene)));
+        let all = plan(&PlanRequest { pool: Pool::All, ..req }).unwrap();
+        assert!(all.segments.iter().any(|s| !crate::scenes::is_builtin(&s.scene)));
+        assert!(serde_json::to_string(&all).unwrap().contains("\"pool\":\"all\""));
+    }
+
+    /// Engine 1 must never change: plan JSON and per-frame uniforms (captured before engine 2 work).
+    #[test]
+    fn engine1_plan_and_frames_are_frozen() {
+        let a = test_analysis();
+        let scenes = test_scenes();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1, pool: Pool::Builtin };
+        let p = plan(&req).unwrap();
+        let mut s = serde_json::to_string(&p).unwrap();
+        for t in [0.3, 10.0, 63.9, 64.05, 96.0, 300.0] {
+            let f = frame_state(&p, &a, &scenes, t, 64, 64, Quality::Draft);
+            let u = &f.a;
+            s += &format!(
+                "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?} {} {} {} {}
+",
+                u.res_time, u.beat, u.bands, u.shape, u.p0, u.p1, u.p2, u.p3, u.pal, u.misc, f.mix, f.flash, f.exposure, f.saturation
+            );
+        }
+        assert_eq!(format!("{:016x}", fnv1a(s.as_bytes())), "ef50e7299a0f9586");
+    }
+
+    #[test]
+    fn engine2_hits_anticipation_and_gated_glitch() {
+        let mut a = test_analysis();
+        a.snares = vec![Kick { time: 31.0, strength: 1.0 }];
+        let scenes = test_scenes();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
+        let mut p = plan(&req).unwrap();
+        let f = frame_state(&p, &a, &scenes, 31.02, 64, 64, Quality::Draft);
+        assert!(f.a.hits[0] > 0.7 && (f.a.hits[2] - 0.02).abs() < 1e-3, "{:?}", f.a.hits);
+        // Drop at 64 s, bar 2 s: 0.25 s before it, anticipation = smoothstep(0.75) ≈ 0.84 and the frame darkens
+        // to ≈ 0.30 exposure (engine 2 only).
+        let pre = frame_state(&p, &a, &scenes, 63.75, 64, 64, Quality::Draft);
+        assert!(pre.a.hits[3] > 0.8 && pre.exposure < 0.6, "{:?} {}", pre.a.hits, pre.exposure);
+        p.engine = 1;
+        assert!(frame_state(&p, &a, &scenes, 63.75, 64, 64, Quality::Draft).exposure > 1.0);
+        p.engine = 2;
+        p.segments[0].genome = Some(Genome { post: Post { strobe: 1.0, tear: 1.0, ..Default::default() }, ..Default::default() });
+        let on = frame_state(&p, &a, &scenes, 32.0, 64, 64, Quality::Draft);
+        let off = frame_state(&p, &a, &scenes, 33.0, 64, 64, Quality::Draft);
+        assert!(on.post.strobe > 0.99 && off.post.strobe < 0.01, "strobe only on downbeats");
+        assert!(frame_state(&p, &a, &scenes, 31.02, 64, 64, Quality::Draft).post.tear > 0.7 && off.post.tear < 0.01, "tear rides the snare");
     }
 }

@@ -34,6 +34,14 @@ pub struct Genome {
     /// Finishing look.
     #[serde(default, skip_serializing_if = "Post::is_clean")]
     pub post: Post,
+    /// Engine-2 genes ("" = none, the engine-1 recipe). Space block id, blend mode (genome::BLENDS) and
+    /// regime name (regime::REGIMES). Empty genes are left out of the JSON, so engine-1 ids are unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub space: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub blend: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub regime: String,
 }
 
 impl Genome {
@@ -49,8 +57,14 @@ impl Genome {
             1 => &mut self.emitter,
             2 => &mut self.colour,
             3 => &mut self.backdrop,
-            _ => &mut self.overlay,
+            4 => &mut self.overlay,
+            _ => &mut self.space,
         })
+    }
+
+    /// Uses the engine-2 template (has any engine-2 gene).
+    pub fn is_v2(&self) -> bool {
+        !self.space.is_empty() || !self.blend.is_empty() || !self.regime.is_empty()
     }
 
     /// Has a backdrop or overlay (so it also has a layer pass).
@@ -60,10 +74,11 @@ impl Genome {
 
     /// Keeps only finite tuned values whose key names a param of this genome's blocks.
     pub fn prune(&mut self, blocks: &Blocks) {
-        let (Ok(parts), Ok(layers)) = (blocks.parts(self), blocks.layer_parts(self)) else { return self.params.clear() };
+        let (Ok(parts), Ok(layers), Ok(space)) = (blocks.parts(self), blocks.layer_parts(self), blocks.space_part(self)) else { return self.params.clear() };
         let keys: Vec<String> = parts
             .into_iter()
             .chain(layers.into_iter().flatten())
+            .chain(space)
             .flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name)))
             .collect();
         self.params.retain(|k, v| keys.contains(k) && v.is_finite());
@@ -92,6 +107,8 @@ pub struct Blocks {
     /// Layer blocks (optional kinds).
     pub backdrop: Vec<Block>,
     pub overlay: Vec<Block>,
+    /// Engine-2 space folds (optional kind).
+    pub space: Vec<Block>,
     /// Palette bank, sRGB hex.
     pub palettes: Vec<[String; 4]>,
 }
@@ -103,11 +120,12 @@ struct BlockToml {
     params: Vec<ParamRange>,
 }
 
-/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last two (layers) are optional.
-pub const KINDS: [&str; 5] = ["motion", "emitter", "colour", "backdrop", "overlay"];
+/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last three (layers, space) are optional.
+pub const KINDS: [&str; 6] = ["motion", "emitter", "colour", "backdrop", "overlay", "space"];
 
-/// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13).
-const SLOTS: [usize; 5] = [3, 3, 2, 4, 2];
+/// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13);
+/// space (engine 2) uses slots 14..15.
+const SLOTS: [usize; 6] = [3, 3, 2, 4, 2, 2];
 
 fn kind_index(kind: &str) -> Result<usize> {
     KINDS.iter().position(|k| *k == kind).with_context(|| format!("unknown kind {kind}"))
@@ -126,6 +144,23 @@ impl Block {
     }
 }
 
+/// Library v1: the only blocks engine 1 picks from, frozen so new (or AI-written) blocks never change old seeds.
+const V1_BLOCKS: &[&str] = &[
+    "back_plate", "back_sea", "back_sky", "back_sprite",
+    "colour_duotone", "colour_hue", "colour_intensity", "colour_iridescent", "colour_whitehot",
+    "emit_blobs", "emit_clouds", "emit_contours", "emit_filaments", "emit_lissajous", "emit_polygon", "emit_rings", "emit_stars",
+    "motion_deepzoom", "motion_ink", "motion_kaleido", "motion_push", "motion_swirl", "motion_tunnel",
+    "over_grid", "over_hud", "over_title",
+];
+/// palettes.toml entries engine 1 picks from (the first N).
+const V1_PALETTES: usize = 30;
+/// Added for engine 2 (V1_BLOCKS + these).
+const V2_BLOCKS: &[&str] = &[
+    "space_droste", "space_hyper", "space_kaleido", "space_kifs", "space_mirror", "space_polar",
+    "motion_erode", "motion_etch", "motion_mosh", "motion_sort",
+    "emit_cells", "emit_hypertile", "emit_kifs3d", "emit_lyapunov", "emit_mandelbox", "emit_orbit", "emit_sdftunnel", "emit_truchet", "emit_warpfbm",
+];
+
 impl Blocks {
     /// Loads scenes/blocks/*.toml (+ matching .wgsl) and palettes.toml.
     pub fn load(dir: &Path) -> Result<Blocks> {
@@ -134,7 +169,7 @@ impl Blocks {
             palettes: Vec<[String; 4]>,
         }
         let pal: Pal = toml::from_str(&std::fs::read_to_string(dir.join("palettes.toml")).context("blocks/palettes.toml")?)?;
-        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], palettes: pal.palettes };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], space: vec![], palettes: pal.palettes };
         let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| Some(e.ok()?.path())).collect();
         paths.sort();
         for path in paths {
@@ -175,9 +210,14 @@ impl Blocks {
         Ok([Self::opt(&self.backdrop, &g.backdrop)?, Self::opt(&self.overlay, &g.overlay)?])
     }
 
+    /// The genome's space block ("" = none), or an error naming an unknown id.
+    pub fn space_part(&self, g: &Genome) -> Result<Option<&Block>> {
+        Self::opt(&self.space, &g.space)
+    }
+
     /// The blocks of `kind`.
     pub fn list(&self, kind: &str) -> Result<&Vec<Block>> {
-        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay][kind_index(kind)?])
+        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space][kind_index(kind)?])
     }
 
     fn list_mut(&mut self, kind: &str) -> Result<&mut Vec<Block>> {
@@ -186,7 +226,8 @@ impl Blocks {
             1 => &mut self.emitter,
             2 => &mut self.colour,
             3 => &mut self.backdrop,
-            _ => &mut self.overlay,
+            4 => &mut self.overlay,
+            _ => &mut self.space,
         })
     }
 
@@ -218,13 +259,32 @@ impl Blocks {
             colour: pick(&self.colour, |g| &g.colour),
             backdrop: pick(&self.backdrop, |g| &g.backdrop),
             overlay: pick(&self.overlay, |g| &g.overlay),
+            space: pick(&self.space, |g| &g.space),
             palettes,
         }
     }
 
+    /// The frozen library of `engine` (1 or 2): only its block ids, in load (sorted) order, and its palettes.
+    pub fn pinned(&self, engine: u32) -> Blocks {
+        let ok = |id: &str| V1_BLOCKS.contains(&id) || (engine >= 2 && V2_BLOCKS.contains(&id));
+        let mut b = self.clone();
+        for k in KINDS {
+            b.list_mut(k).expect("known kind").retain(|x| ok(&x.id));
+        }
+        // ponytail: a custom --scenes folder may hold none of the frozen ids; a required kind left empty
+        // would panic in random()/nth_id (i % 0), so it keeps its unpinned list (unreproducible, but runs).
+        for k in ["motion", "emitter", "colour"] {
+            if b.list(k).expect("known kind").is_empty() {
+                *b.list_mut(k).expect("known kind") = self.list(k).expect("known kind").clone();
+            }
+        }
+        b.palettes.truncate(V1_PALETTES);
+        b
+    }
+
     /// The range of param `key` (see `param_key`).
     fn param(&self, key: &str) -> Option<&ParamRange> {
-        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay].into_iter().flatten();
+        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space].into_iter().flatten();
         all.flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty() && param_key(&b.id, &p.name) == key)).next()
     }
 }
@@ -266,6 +326,45 @@ fn scene(uv: vec2<f32>) -> vec4<f32> {
 const NO_BACKDROP: &str = "fn backdrop(p: vec2<f32>) -> vec3<f32> { return vec3<f32>(0.0); }";
 const NO_OVERLAY: &str = "fn overlay(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(0.0); }";
 
+/// Engine 2: the plane is folded (space) before motion and emitter see it; the emitter blends over the
+/// feedback by mode; the regime scales trail length and music drive; onsets punch, anticipation squeezes.
+const TEMPLATE_V2: &str = r#"
+fn MP(i: i32) -> f32 { return P(i); }
+fn EP(i: i32) -> f32 { return P(3 + i); }
+fn CP(i: i32) -> f32 { return P(6 + i); }
+fn SP(i: i32) -> f32 { return P(14 + i); }
+{IMG}
+{SPACE}
+{MOTION}
+{EMITTER}
+{COLOUR}
+{BLEND}
+fn scene(uv: vec2<f32>) -> vec4<f32> {
+    let p = space(to_centered(uv));
+    var col = prev(motion(to_uv(p))) * min(motion_decay() * {DECAY}, 0.995);
+    let drive = {DRIVE} * (0.5 + 0.9 * punch() + 0.3 * snare() + 0.6 * drop_env()) * (1.0 - 0.6 * anticipation());
+    col = blend(col, colour(emit(p)) * drive);
+    col = col / (1.0 + 0.12 * dot(col, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    return vec4<f32>(col, 1.0);
+}
+"#;
+const NO_SPACE: &str = "fn space(p: vec2<f32>) -> vec2<f32> { return p; }";
+
+/// Engine-2 blend modes of the emitter over the feedback; "" = add (the engine-1 recipe).
+pub const BLENDS: [&str; 4] = ["screen", "difference", "multiply", "lighten"];
+
+fn blend_wgsl(name: &str) -> String {
+    let e = match name {
+        "screen" => "a + b * max(vec3<f32>(1.0) - a, vec3<f32>(0.0))",
+        "difference" => "abs(a - b)",
+        // A pure multiply goes black in a feedback loop: the emitter reveals the feedback instead.
+        "multiply" => "a * (vec3<f32>(0.4) + 1.6 * b) + 0.05 * b",
+        "lighten" => "max(a, b)",
+        _ => "a + b",
+    };
+    format!("fn blend(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {{ return {e}; }}")
+}
+
 fn img_wgsl(g: &Genome) -> String {
     let i = g.plate.map_or(-1, |i| i as i64);
     format!("// The look's picture (prelude plate()); transparent when it has none.\nfn img(p: vec2<f32>) -> vec4<f32> {{ return plate({i}, p); }}")
@@ -274,7 +373,19 @@ fn img_wgsl(g: &Genome) -> String {
 /// Scene body (prelude is prepended by scenes::shader_source as for any scene).
 pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
     let [m, e, c] = blocks.parts(g)?;
-    Ok(TEMPLATE.replace("{IMG}", &img_wgsl(g)).replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl))
+    if !g.is_v2() {
+        return Ok(TEMPLATE.replace("{IMG}", &img_wgsl(g)).replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl));
+    }
+    let r = crate::regime::get(&g.regime);
+    Ok(TEMPLATE_V2
+        .replace("{IMG}", &img_wgsl(g))
+        .replace("{SPACE}", blocks.space_part(g)?.map_or(NO_SPACE, |b| &b.wgsl))
+        .replace("{MOTION}", &m.wgsl)
+        .replace("{EMITTER}", &e.wgsl)
+        .replace("{COLOUR}", &c.wgsl)
+        .replace("{BLEND}", &blend_wgsl(&g.blend))
+        .replace("{DECAY}", &format!("{:?}", r.map_or(1.0, |r| r.decay)))
+        .replace("{DRIVE}", &format!("{:?}", r.map_or(1.0, |r| r.drive))))
 }
 
 /// Layer pass source (None when the genome has no layer blocks).
@@ -294,7 +405,7 @@ pub fn layers_wgsl(g: &Genome, blocks: &Blocks) -> Result<Option<String>> {
     ))
 }
 
-/// In-memory Scene for a genome: 8 param slots, 14 with layers (each block's params padded to its slot count)
+/// In-memory Scene for a genome: 8 param slots, 14 with layers, 16 with a space block (each block's params padded to its slot count)
 /// and the genome's palette. `wgsl_path` = <gen_dir>/<id>.wgsl (written by `write`).
 /// A tuned value (`g.params`) narrows its range to value ± 15% of the width (fixed: exactly value).
 pub fn to_scene(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
@@ -304,6 +415,13 @@ pub fn to_scene(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     let mut slots = vec![(Some(m), SLOTS[0]), (Some(e), SLOTS[1]), (Some(c), SLOTS[2])];
     if g.has_layers() {
         slots.extend([(bd, SLOTS[3]), (ov, SLOTS[4])]);
+    }
+    // Space params live in slots 14..15 (after the layers' 8..13, padded when there are none).
+    if let Some(sp) = blocks.space_part(g)? {
+        if !g.has_layers() {
+            slots.extend([(None, SLOTS[3]), (None, SLOTS[4])]);
+        }
+        slots.push((Some(sp), SLOTS[5]));
     }
     let mut params = Vec::with_capacity(crate::types::MAX_PARAMS);
     for (b, n) in slots {
@@ -430,6 +548,61 @@ pub fn dress(g: &Genome, blocks: &Blocks, r: u64, plates: usize, text: &str) -> 
     out
 }
 
+/// Seed-made palette from Inigo Quilez's cosine formula a + b·cos(2π(c·t + d)) (c picks the banding:
+/// 0.5/1/2/3 cycles), sampled at t = 0.25/0.5/0.75; entry 0 is the t = 0 colour darkened to near black
+/// (blocks treat entry 0 as the background). `r` = 64-bit hash.
+// ponytail: sampled into the 4-colour bank format, so banding only shows through 3 samples; a uniform-driven pal() if that's too coarse.
+pub fn cosine_palette(r: u64) -> [String; 4] {
+    let u = |k: u64| (crate::types::mix64(r.wrapping_add(k)) >> 40) as f32 / (1u64 << 24) as f32;
+    let freq = [0.5, 1.0, 2.0, 3.0][(crate::types::mix64(r) % 4) as usize];
+    let ch = |k: u64| (0.5 + 0.1 * (u(k) - 0.5), 0.35 + 0.15 * u(k + 3), freq * (0.9 + 0.2 * u(k + 6)), u(k + 9));
+    let abcd = [ch(1), ch(2), ch(3)];
+    let at = |t: f32| abcd.map(|(a, b, c, d)| (a + b * (std::f32::consts::TAU * (c * t + d)).cos()).clamp(0.0, 1.0));
+    let hex = |c: [f32; 3]| format!("#{:02x}{:02x}{:02x}", (c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
+    [hex(at(0.0).map(|x| x * 0.08)), hex(at(0.25)), hex(at(0.5)), hex(at(0.75))]
+}
+
+fn pick_blend(h: u64) -> String {
+    if h % 2 == 0 { String::new() } else { BLENDS[((h >> 8) % BLENDS.len() as u64) as usize].into() }
+}
+
+/// Engine-2 random genome: `random`'s blocks plus a space fold (none a sixth of the time), a blend mode
+/// (add half the time), a cosine palette half the time, and the segment's `regime` with its finishing look
+/// (mono tints with palette colour 2). `r` = 64-bit hash.
+pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Genome {
+    let h = |k: u64| crate::types::hash(r, k);
+    let mut g = random(blocks, r);
+    if !blocks.space.is_empty() && h(1) % 6 != 0 {
+        g.space = nth_id(&blocks.space, h(2) as usize);
+    }
+    g.blend = pick_blend(h(3));
+    if h(4) % 2 == 0 {
+        g.palette = cosine_palette(h(5));
+    }
+    g.regime = regime.name.into();
+    g.post = regime.post;
+    if g.post.tint_amount > 0.0 {
+        g.post.tint = crate::scenes::hex(&g.palette[2]).unwrap_or([1.0; 3]);
+    }
+    g
+}
+
+/// Engine-2 mutation: a third of the time swap the space fold (or drop it), a third the blend mode, else
+/// `mutate` (blocks / palette / params). The regime never changes: it belongs to the segment.
+pub fn mutate_v2(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
+    let h = |k: u64| crate::types::hash(r, k);
+    let mut out = match h(1) % 3 {
+        0 if !blocks.space.is_empty() => Genome { space: if h(2) % 4 == 0 { String::new() } else { nth_id(&blocks.space, h(3) as usize) }, ..g.clone() },
+        1 => Genome { blend: pick_blend(h(4)), ..g.clone() },
+        _ => mutate(g, blocks, r),
+    };
+    if out.palette != g.palette && out.post.tint_amount > 0.0 {
+        out.post.tint = crate::scenes::hex(&out.palette[2]).unwrap_or([1.0; 3]);
+    }
+    out.prune(blocks);
+    out
+}
+
 fn nth_id(list: &[Block], i: usize) -> String {
     list[i % list.len()].id.clone()
 }
@@ -502,6 +675,116 @@ mod tests {
         for r in 0..16u64 {
             let d = dress(&plain, &b, r * 0x0001_0001_0001_0001, 0, "");
             assert!(d.plate.is_none() && !b.backdrop.iter().find(|x| x.id == d.backdrop).unwrap().wgsl.contains("img("));
+        }
+    }
+
+    /// Engine 1 must never change: fingerprints of generated sources and picks (captured before engine 2 work).
+    #[test]
+    fn engine1_genomes_are_frozen() {
+        let b = blocks().pinned(1);
+        let sig = |s: String| format!("{:016x}", fnv1a(s.as_bytes()));
+        let layered = Genome { backdrop: "back_sky".into(), overlay: "over_hud".into(), plate: Some(1), feedback: Some(0.6), text: "HI".into(), ..genome() };
+        let picks: String = (0..16u64)
+            .map(|r| {
+                let h = crate::types::hash(1, r);
+                let g = random(&b, h);
+                format!("{} {} {}
+", g.id(), mutate(&g, &b, h ^ 7).id(), dress(&g, &b, h ^ 9, 2, "HI").id())
+            })
+            .collect();
+        assert_eq!(sig(wgsl(&genome(), &b).unwrap()), "a4fdfcc0cf60b4dd");
+        assert_eq!(sig(layers_wgsl(&layered, &b).unwrap().unwrap()), "f1291d26fa6fffb5");
+        assert_eq!(sig(picks), "bd4ab21b71a54d52");
+    }
+
+    #[test]
+    fn library_pins() {
+        let b = blocks();
+        let v1 = b.pinned(1);
+        let ids = |l: &[Block]| l.iter().map(|x| x.id.as_str()).collect::<Vec<_>>().join(" ");
+        assert_eq!(ids(&v1.motion), "motion_deepzoom motion_ink motion_kaleido motion_push motion_swirl motion_tunnel");
+        assert_eq!(ids(&v1.backdrop), "back_plate back_sea back_sky back_sprite");
+        assert_eq!((v1.emitter.len(), v1.colour.len(), v1.overlay.len(), v1.space.len(), v1.palettes.len()), (8, 5, 3, 0, 30));
+        let v2 = b.pinned(2);
+        assert!(v1.motion.iter().all(|m| v2.motion.iter().any(|x| x.id == m.id)));
+    }
+
+    fn space_block(id: &str, wgsl: &str) -> Block {
+        let pr = |name: &str, min, max, fixed| ParamRange { name: name.into(), min, max, fixed };
+        Block { id: id.into(), params: vec![pr("n", 3.0, 6.0, true), pr("s", 0.1, 0.2, false)], wgsl: wgsl.into(), toml: String::new() }
+    }
+
+    #[test]
+    fn v2_template_space_slots_and_blend() {
+        let mut b = blocks().pinned(1);
+        b.add("space", space_block("space_test", "fn space(p: vec2<f32>) -> vec2<f32> { return abs(p) * SP(0); }")).unwrap();
+        let g = Genome { space: "space_test".into(), blend: "difference".into(), regime: "dark".into(), ..genome() };
+        let src = wgsl(&g, &b).unwrap();
+        assert!(src.contains("fn SP(") && src.contains("abs(p) * SP(0)") && src.contains("abs(a - b)") && src.contains("* 0.97, 0.995)"));
+        let sc = to_scene(&g, &b, Path::new(".")).unwrap();
+        assert_eq!(sc.params.len(), 16);
+        assert_eq!((sc.params[14].min, sc.params[15].max), (3.0, 0.2));
+        assert!(sc.params[8..14].iter().all(|p| p.fixed && p.max == 0.0));
+        assert!(!wgsl(&genome(), &b).unwrap().contains("fn space"), "no genes: engine-1 recipe");
+        let calm = wgsl(&Genome { regime: "calm".into(), ..genome() }, &b).unwrap();
+        assert!(calm.contains(NO_SPACE) && calm.contains("return a + b;"));
+    }
+
+    #[test]
+    fn random_v2_varies_every_gene_deterministically() {
+        let mut b = blocks().pinned(1);
+        for k in 0..3 {
+            b.add("space", space_block(&format!("space_t{k}"), "")).unwrap();
+        }
+        let reg = &crate::regime::REGIMES[1];
+        let gs: Vec<Genome> = (0..48).map(|r| random_v2(&b, crate::types::hash(9, r), reg)).collect();
+        assert_eq!(gs[3], random_v2(&b, crate::types::hash(9, 3), reg));
+        let distinct = |f: &dyn Fn(&Genome) -> String| gs.iter().map(f).collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(distinct(&|g| g.space.clone()), 4, "none + 3 folds");
+        assert_eq!(distinct(&|g| g.blend.clone()), 5, "add + 4 modes");
+        assert!(distinct(&|g| g.palette.join("")) > 30, "bank + cosine palettes");
+        for (i, g) in gs.iter().enumerate() {
+            assert!(crate::scenes::palette(&g.palette).is_ok());
+            assert_eq!(mutate_v2(g, &b, crate::types::hash(4, i as u64)).regime, reg.name);
+        }
+        let mono = random_v2(&b, 5, crate::regime::get("mono").unwrap());
+        assert_eq!(mono.post.tint, crate::scenes::hex(&mono.palette[2]).unwrap());
+        for i in 0..32 {
+            let m = mutate_v2(&mono, &b, crate::types::hash(6, i));
+            assert_eq!(m.post.tint, crate::scenes::hex(&m.palette[2]).unwrap(), "tint follows the palette");
+        }
+    }
+
+    #[test]
+    fn pinned_keeps_a_kind_with_no_frozen_ids() {
+        let mut b = blocks();
+        b.motion.retain(|x| x.id == "motion_ink");
+        b.motion[0].id = "motion_custom".into();
+        let p = b.pinned(1);
+        assert_eq!(p.motion.len(), 1);
+        random(&p, 7);
+    }
+
+    #[test]
+    fn cosine_palettes_are_dark_first_and_varied() {
+        let ps: std::collections::HashSet<[String; 4]> = (0..32u64).map(|r| cosine_palette(crate::types::hash(3, r))).collect();
+        assert!(ps.len() >= 30);
+        for p in &ps {
+            let lin = crate::scenes::palette(p).unwrap();
+            assert!(lin[0].iter().all(|&c| c < 0.01), "entry 0 must be near black: {p:?}");
+        }
+    }
+
+    /// Engine-2 blocks prefix every helper with their id, so any combination links.
+    #[test]
+    fn engine2_block_helpers_are_prefixed() {
+        let b = blocks().pinned(2);
+        let contract = ["motion", "motion_decay", "emit", "colour", "space"];
+        for blk in [&b.motion, &b.emitter, &b.space].into_iter().flatten().filter(|x| V2_BLOCKS.contains(&x.id.as_str())) {
+            for line in blk.wgsl.lines().filter(|l| l.starts_with("fn ") || l.starts_with("const ")) {
+                let name = line.split([' ', '(', ':']).nth(1).unwrap_or_default();
+                assert!(contract.contains(&name) || name.starts_with(&blk.id), "{}: helper {name} needs the prefix {}", blk.id, blk.id);
+            }
         }
     }
 }

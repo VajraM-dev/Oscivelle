@@ -114,7 +114,8 @@ pub fn run(c: &AiConfig, judge: &mut Judge, blocks_dir: &Path, gen_dir: &Path, b
     let contract = std::fs::read_to_string(blocks_dir.join("CONTRACT.md")).context("blocks/CONTRACT.md")?;
     let prelude = std::fs::read_to_string(crate::scenes::prelude_path(blocks_dir.parent().unwrap_or(blocks_dir))).context("_prelude.wgsl")?;
     let mut menu = String::new();
-    for kind in genome::KINDS {
+    // space is an engine-2 core gene; not offered to the AI
+    for kind in genome::KINDS.iter().filter(|k| **k != "space") {
         for b in blocks.list(kind)? {
             menu += &format!("### {} ({kind})\n```toml\n{}\n```\n", b.id, b.toml.trim());
         }
@@ -389,7 +390,9 @@ fn look(v: &Value) -> Option<Genome> {
             posterize: f("posterize"),
             tint_amount: f("tint_amount"),
             tint: post["tint"].as_str().and_then(|h| crate::scenes::hex(h).ok()).unwrap_or([1.0; 3]),
+            ..Default::default()
         },
+        ..Default::default()
     })
 }
 

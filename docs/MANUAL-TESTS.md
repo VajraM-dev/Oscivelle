@@ -73,6 +73,20 @@ eleaseisualiser.exe --setup-ai`. Enter the base URL, key and a model that suppo
 - [ ] Run the previous command again: no `vibe: painting` lines (pictures come from the cache in `plates\` in the data folder).
 - [ ] With no image model set (`--forget-ai`, then `--setup-ai` and press Enter at the image prompt): a vibe still works and requests no pictures.
 
+## 9. Engine 2 (`feature/core-variety`)
+
+Build first: `cargo build --release`. Copy `dnb8.wav` from `C:\Prathamesh\Ableton\Music\dnb5` into `testdata\` if it's missing.
+
+- [ ] Seed smokes: `target\release\visualiser testdata\dnb8.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed N` for N = 1, 2, 3, 4. **Watch** each `testdata\dnb8.preview-60s.mp4`. Look for:
+  - Each seed is structurally different: another fold, mood or blend, not just another colour.
+  - Drop anticipation: the picture darkens before the drop, then explodes on it.
+  - No flashes faster than once per bar.
+- [ ] Engine 1 is byte-identical to `main`. Build `main` in a separate git worktree (`git worktree add ..\rv-main main`, then `cargo build --release` there). Give each tree its own copy of the wav in its own folder, so the two projects don't share a data folder.
+  **Caveat:** libx264 multithreaded encoding is not repeatable run to run. In BOTH trees, temporarily add `-threads 1` to the x264 args in `src\render\mod.rs` (~line 167), rebuild, then revert it afterwards.
+  - [ ] Run `visualiser <wav> --replan --preview 1:00 --quality draft` in each tree, adding `--engine 1` on the branch run only (engine 2 is the branch default; `main` has no such flag), then `ffmpeg -i <preview>.mp4 -f framemd5 -an <main|branch>.md5`. The two `.md5` files must be equal.
+  - [ ] Repeat with `--layers` added. On the `main` run, move the 6 untracked `scenes\blocks\*runner*` / `*trippy*` files aside first (main loads them, the branch pins them out) and put them back afterwards.
+  - [ ] Revert the `-threads 1` change in both trees.
+
 ## Known gaps (not bugs, decided)
 
 - A saved plan that names a block that has since been deleted stops with an error; `--replan` fixes it.

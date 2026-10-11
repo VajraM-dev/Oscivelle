@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Cells: a drifting Voronoi field with glowing walls and nuclei; each kick lights a random few cells"
+[[param]]
+name = "density"    # cells per unit
+min = 2.0
+max = 6.0
+[[param]]
+name = "wall"       # wall width
+min = 0.03
+max = 0.12
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true
