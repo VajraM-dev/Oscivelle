@@ -93,8 +93,7 @@ pub fn best_v2(
     let t0 = (start + 30.0).min((start + end) / 2.0);
     let regime = &REGIMES[(hash(seed, 0x4E61) % REGIMES.len() as u64) as usize];
     // The look's visual grammar, drawn before any block: every candidate and mutation comes from its pool.
-    let grammar = genome::GRAMMARS[(hash(seed, 0x6A4D) % genome::GRAMMARS.len() as u64) as usize];
-    let blocks = &blocks.grammar_pool(grammar);
+    let grammar = genome::grammar_for(seed);
     // A look already seen yields None, so `pass` has no duplicates.
     let mut seen = std::collections::HashSet::new();
     let mut measure = |g: Genome| -> Option<(Genome, [f32; 6])> {

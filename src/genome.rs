@@ -302,18 +302,7 @@ impl Blocks {
 
     /// The frozen library of `engine` (1 or 2): only its block ids, in load (sorted) order, and its palettes.
     pub fn pinned(&self, engine: u32) -> Blocks {
-        let ok = |id: &str| V1_BLOCKS.contains(&id) || (engine >= 2 && V2_BLOCKS.contains(&id));
-        let mut b = self.clone();
-        for k in KINDS {
-            b.list_mut(k).expect("known kind").retain(|x| ok(&x.id));
-        }
-        // ponytail: a custom --scenes folder may hold none of the frozen ids; a required kind left empty
-        // would panic in random()/nth_id (i % 0), so it keeps its unpinned list (unreproducible, but runs).
-        for k in ["motion", "emitter", "colour"] {
-            if b.list(k).expect("known kind").is_empty() {
-                *b.list_mut(k).expect("known kind") = self.list(k).expect("known kind").clone();
-            }
-        }
+        let mut b = self.keep(&KINDS, |id| V1_BLOCKS.contains(&id) || (engine >= 2 && V2_BLOCKS.contains(&id)));
         b.palettes.truncate(V1_PALETTES);
         b
     }
@@ -321,17 +310,22 @@ impl Blocks {
     /// The blocks a look of `grammar` may use ("" = all): motion, emitter, space and comp blocks tagged with it
     /// in BLOCK_TAGS (untagged ones only under ""); colours, layers and palettes all.
     pub fn grammar_pool(&self, grammar: &str) -> Blocks {
-        let mut b = self.clone();
         if grammar.is_empty() {
-            return b;
+            return self.clone();
         }
-        let ok = |id: &str| BLOCK_TAGS.iter().any(|(t, gs, _)| *t == id && gs.split(' ').any(|g| g == grammar));
-        for k in ["motion", "emitter", "space", "comp"] {
+        self.keep(&["motion", "emitter", "space", "comp"], |id| BLOCK_TAGS.iter().any(|(t, gs, _)| *t == id && gs.split(' ').any(|g| g == grammar)))
+    }
+
+    /// A copy with only the `kinds` blocks whose id is `ok`.
+    fn keep(&self, kinds: &[&str], ok: impl Fn(&str) -> bool) -> Blocks {
+        let mut b = self.clone();
+        for k in kinds {
             b.list_mut(k).expect("known kind").retain(|x| ok(&x.id));
         }
-        // ponytail: as in pinned(), a custom --scenes folder may tag nothing; a required kind left empty keeps
-        // its whole list (that grammar then isn't kept, but it runs).
-        for k in ["motion", "emitter"] {
+        // ponytail: a custom --scenes folder may hold none of the frozen (or tagged) ids; a required kind left
+        // empty would panic in random()/nth_id (i % 0), so it keeps its whole list (unreproducible / off-grammar,
+        // but runs).
+        for k in ["motion", "emitter", "colour"] {
             if b.list(k).expect("known kind").is_empty() {
                 *b.list_mut(k).expect("known kind") = self.list(k).expect("known kind").clone();
             }
@@ -444,6 +438,11 @@ pub const TEMPLATES: [&str; 2] = ["stateless", "dual"];
 /// (the classic library: tunnels, folds, spins), flow (advected fields, no centre), grid (tiles, mosaics,
 /// sequencers), scroll (everything slides one way) and still (the camera holds; only the emitter moves).
 pub const GRAMMARS: [&str; 5] = ["radial", "flow", "grid", "scroll", "still"];
+
+/// The visual grammar of the segment with `seed` (drawn before any block, evolve::best_v2).
+pub fn grammar_for(seed: u64) -> &'static str {
+    GRAMMARS[(crate::types::hash(seed, 0x6A4D) % GRAMMARS.len() as u64) as usize]
+}
 
 /// The grammars each pinned engine-2 motion, emitter, space and comp block belongs to, and what it looks like
 /// (R time-driven rotation, Z steady radial zoom, T tunnel/vanishing point, C centred symmetry, D raymarched
@@ -764,10 +763,10 @@ pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime, gramma
     }
     // Recipe: stateless a sixth of the time, dual (a second, different emitter) a sixth, else feedback.
     match h(6) % 6 {
-        0 => g.template = "stateless".into(),
+        0 => g.template = TEMPLATES[0].into(),
         1 if blocks.emitter.len() > 1 => {
             let others: Vec<&Block> = blocks.emitter.iter().filter(|b| b.id != g.emitter).collect();
-            g.template = "dual".into();
+            g.template = TEMPLATES[1].into();
             g.emitter_b = others[(h(7) % others.len() as u64) as usize].id.clone();
         }
         _ => {}
@@ -804,9 +803,11 @@ fn settle(g: &Genome, mut out: Genome, blocks: &Blocks) -> Genome {
 }
 
 /// Engine-2 mutation: a third of the time swap the space fold (or drop it), a third the blend mode, else
-/// `mutate` (blocks / palette / params). The regime never changes: it belongs to the segment.
+/// `mutate` (blocks / palette / params), from the genome's grammar's blocks. The regime and grammar never
+/// change: they belong to the segment.
 pub fn mutate_v2(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
+    let blocks = &blocks.grammar_pool(&g.grammar);
     let out = match h(1) % 3 {
         0 if !blocks.space.is_empty() => Genome { space: if h(2) % 4 == 0 { String::new() } else { nth_id(&blocks.space, h(3) as usize) }, ..g.clone() },
         1 => Genome { blend: pick_blend(h(4)), ..g.clone() },
@@ -832,13 +833,10 @@ pub fn vary(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
         Some(ids[(h(k + 10) % ids.len() as u64) as usize].to_string())
     };
     let mut out = g.clone();
-    let swapped = match h(1) % 3 {
-        0 => other(&pool.space, &g.space, 2).map(|s| out.space = s),
-        1 => other(&pool.comp, &g.comp, 3).map(|c| out.comp = c),
-        _ => None,
-    };
-    if swapped.is_none() {
-        out.palette = cosine_palette(h(4));
+    match h(1) % 3 {
+        0 => if let Some(s) = other(&pool.space, &g.space, 2) { out.space = s } else { out.palette = cosine_palette(h(4)) },
+        1 => if let Some(c) = other(&pool.comp, &g.comp, 3) { out.comp = c } else { out.palette = cosine_palette(h(4)) },
+        _ => out.palette = cosine_palette(h(4)),
     }
     settle(g, out, blocks)
 }
@@ -1126,14 +1124,13 @@ mod tests {
 
     /// The library as BLOCK_TAGS describes it (empty sources): the picking logic without the files.
     fn tagged_library() -> Blocks {
-        let blk = |id: &str| Block { id: id.into(), params: vec![], wgsl: String::new(), toml: String::new() };
-        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![blk("colour_x")], backdrop: vec![], overlay: vec![], space: vec![], comp: vec![], palettes: vec![genome().palette] };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![comp_block("colour_x", "")], backdrop: vec![], overlay: vec![], space: vec![], comp: vec![], palettes: vec![genome().palette] };
         for (id, _, _) in BLOCK_TAGS {
             let kind = match id.split('_').next().unwrap() {
                 "emit" => "emitter",
                 k => k,
             };
-            b.add(kind, blk(id)).unwrap();
+            b.add(kind, comp_block(id, "")).unwrap();
         }
         b
     }
@@ -1151,7 +1148,7 @@ mod tests {
         for s in 0..n {
             let r = crate::types::hash(21, s);
             // As evolve::best_v2 draws it.
-            let grammar = GRAMMARS[(crate::types::hash(r, 0x6A4D) % GRAMMARS.len() as u64) as usize];
+            let grammar = grammar_for(r);
             let g = random_v2(&b, r, reg, grammar);
             assert_eq!(g.grammar, grammar);
             seen.insert(grammar);

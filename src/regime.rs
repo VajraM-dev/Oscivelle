@@ -40,10 +40,7 @@ pub fn gate(r: &Regime, template: &str, grammar: &str) -> Thresholds {
         "dual" => Thresholds { max_clipped: th.max_clipped * 1.3, ..th },
         _ => th,
     };
-    match grammar {
-        "still" => Thresholds { motion: (th.motion.0 * 0.25, th.motion.1), ..th },
-        _ => th,
-    }
+    if grammar == "still" { Thresholds { motion: (th.motion.0 * 0.25, th.motion.1), ..th } } else { th }
 }
 
 #[cfg(test)]
