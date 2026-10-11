@@ -292,13 +292,14 @@ fn run(cli: Cli) -> Result<()> {
             // Evolution stays on-vibe: random picks and mutations only use the seeds' blocks.
             let sub = blocks.as_ref().filter(|_| !seeds.is_empty()).map(|b| b.subset(&seeds));
             // Each generated segment starts from a different seed.
-            let k = Cell::new(0);
+            let k = Cell::new(0usize);
             let budget = if cli.quality == Quality::Draft { 10 } else { 20 };
             let evolved = |start: f64, end: f64, r| {
                 let blocks = blocks.as_ref().filter(|_| generated > 0.0)?;
                 eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
                 let judge = gen.get_or_init(|| score::Judge::new(&scenes, &scenes_dir, cli.cpu).map(RefCell::new)).as_ref().ok()?;
-                let i = k.replace(k.get() + 1) % seeds.len().max(1);
+                // The take's seed shifts the rotation, so new takes start from other looks.
+                let i = k.replace(k.get() + 1).wrapping_add(hash(cli.seed, 0x5EED) as usize) % seeds.len().max(1);
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
                 evolve::best(&mut judge.borrow_mut(), sub.as_ref().unwrap_or(blocks), &gen_dir, &analysis, start, end, r, &rotated, budget)
             };

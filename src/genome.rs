@@ -360,8 +360,15 @@ pub fn export(g: &Genome, blocks: &Blocks, scenes_dir: &Path) -> Result<String> 
 }
 
 /// One random change: swap motion, emitter or colour, take another palette, or (when the
-/// genome has tuned params) nudge one tuned value by ±15% of its range.
+/// genome has tuned params) nudge one tuned value by ±15% of its range. A third of the time
+/// (chosen by `r`) it jumps instead: two changes at once, a param re-drawn across its whole range.
 pub fn mutate(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
+    let big = crate::types::mix64(r).is_multiple_of(3);
+    let out = mutate_once(g, blocks, r, big);
+    if big { mutate_once(&out, blocks, crate::types::mix64(r ^ 1), true) } else { out }
+}
+
+fn mutate_once(g: &Genome, blocks: &Blocks, r: u64, big: bool) -> Genome {
     let mut out = g.clone();
     let i = (r & 0xffff_ffff) as usize;
     match (r >> 32) % if g.params.is_empty() { 4 } else { 5 } {
@@ -372,7 +379,11 @@ pub fn mutate(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
         _ => {
             let (key, v) = out.params.iter_mut().nth(i % g.params.len()).unwrap();
             if let Some(p) = blocks.param(key) {
-                *v = p.nudge(*v, if i & 0x8000_0000 == 0 { 0.15 } else { -0.15 });
+                *v = if big {
+                    p.nudge(p.min.min(p.max), ((i >> 8) & 0xffff) as f32 / 65535.0)
+                } else {
+                    p.nudge(*v, if i & 0x8000_0000 == 0 { 0.15 } else { -0.15 })
+                };
             }
         }
     }
@@ -457,10 +468,10 @@ mod tests {
         assert!((s.min - 0.0084).abs() < 1e-6 && (s.max - 0.009).abs() < 1e-6, "{s:?}");
         assert_eq!((sc.params[6].min, sc.params[6].max), (0.3, 0.3));
         assert_eq!((sc.params[0].min, sc.params[0].max), (1.2, 2.4)); // untouched
-        // mutate's 5th case keeps tuned values inside their range.
+        // mutate's 5th case keeps tuned values inside their range (a big jump may swap the block away).
         for r in 0..64u64 {
             let m = mutate(&g, &b, (4 << 32) | (r * 0x0400_0001));
-            assert!((0.005..=0.009).contains(&m.params["motion_ink.current_speed"]));
+            assert!(m.params.get("motion_ink.current_speed").is_none_or(|v| (0.005..=0.009).contains(v)));
         }
     }
 
