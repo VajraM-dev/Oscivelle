@@ -504,4 +504,26 @@ mod tests {
             assert!(d.plate.is_none() && !b.backdrop.iter().find(|x| x.id == d.backdrop).unwrap().wgsl.contains("img("));
         }
     }
+
+    /// Engine 1 must never change: fingerprints of generated sources and picks (captured before engine 2 work).
+    #[test]
+    fn engine1_genomes_are_frozen() {
+        let mut b = blocks();
+        // Only the committed layer blocks (the folder may hold untracked AI-written ones).
+        b.backdrop.retain(|x| ["back_plate", "back_sea", "back_sky", "back_sprite"].contains(&x.id.as_str()));
+        b.overlay.retain(|x| ["over_grid", "over_hud", "over_title"].contains(&x.id.as_str()));
+        let sig = |s: String| format!("{:016x}", fnv1a(s.as_bytes()));
+        let layered = Genome { backdrop: "back_sky".into(), overlay: "over_hud".into(), plate: Some(1), feedback: Some(0.6), text: "HI".into(), ..genome() };
+        let picks: String = (0..16u64)
+            .map(|r| {
+                let h = crate::types::hash(1, r);
+                let g = random(&b, h);
+                format!("{} {} {}
+", g.id(), mutate(&g, &b, h ^ 7).id(), dress(&g, &b, h ^ 9, 2, "HI").id())
+            })
+            .collect();
+        assert_eq!(sig(wgsl(&genome(), &b).unwrap()), "a4fdfcc0cf60b4dd");
+        assert_eq!(sig(layers_wgsl(&layered, &b).unwrap().unwrap()), "f1291d26fa6fffb5");
+        assert_eq!(sig(picks), "bd4ab21b71a54d52");
+    }
 }

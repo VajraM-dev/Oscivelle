@@ -786,4 +786,24 @@ mod tests {
         let p3 = plan(&PlanRequest { force_scene: Some("s1"), ..req(&[]) }).unwrap();
         assert!(p3.segments.iter().all(|s| s.genome.is_none() && s.scene == "s1"));
     }
+
+    /// Engine 1 must never change: plan JSON and per-frame uniforms (captured before engine 2 work).
+    #[test]
+    fn engine1_plan_and_frames_are_frozen() {
+        let a = test_analysis();
+        let scenes = test_scenes();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[] };
+        let p = plan(&req).unwrap();
+        let mut s = serde_json::to_string(&p).unwrap();
+        for t in [0.3, 10.0, 63.9, 64.05, 96.0, 300.0] {
+            let f = frame_state(&p, &a, &scenes, t, 64, 64, Quality::Draft);
+            let u = &f.a;
+            s += &format!(
+                "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?} {} {} {} {}
+",
+                u.res_time, u.beat, u.bands, u.shape, u.p0, u.p1, u.p2, u.p3, u.pal, u.misc, f.mix, f.flash, f.exposure, f.saturation
+            );
+        }
+        assert_eq!(format!("{:016x}", fnv1a(s.as_bytes())), "ef50e7299a0f9586");
+    }
 }
