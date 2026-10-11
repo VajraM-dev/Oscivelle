@@ -271,6 +271,13 @@ impl Blocks {
         for k in KINDS {
             b.list_mut(k).expect("known kind").retain(|x| ok(&x.id));
         }
+        // ponytail: a custom --scenes folder may hold none of the frozen ids; a required kind left empty
+        // would panic in random()/nth_id (i % 0), so it keeps its unpinned list (unreproducible, but runs).
+        for k in ["motion", "emitter", "colour"] {
+            if b.list(k).expect("known kind").is_empty() {
+                *b.list_mut(k).expect("known kind") = self.list(k).expect("known kind").clone();
+            }
+        }
         b.palettes.truncate(V1_PALETTES);
         b
     }
@@ -589,6 +596,9 @@ pub fn mutate_v2(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
         1 => Genome { blend: pick_blend(h(4)), ..g.clone() },
         _ => mutate(g, blocks, r),
     };
+    if out.palette != g.palette && out.post.tint_amount > 0.0 {
+        out.post.tint = crate::scenes::hex(&out.palette[2]).unwrap_or([1.0; 3]);
+    }
     out.prune(blocks);
     out
 }
@@ -739,6 +749,20 @@ mod tests {
         }
         let mono = random_v2(&b, 5, crate::regime::get("mono").unwrap());
         assert_eq!(mono.post.tint, crate::scenes::hex(&mono.palette[2]).unwrap());
+        for i in 0..32 {
+            let m = mutate_v2(&mono, &b, crate::types::hash(6, i));
+            assert_eq!(m.post.tint, crate::scenes::hex(&m.palette[2]).unwrap(), "tint follows the palette");
+        }
+    }
+
+    #[test]
+    fn pinned_keeps_a_kind_with_no_frozen_ids() {
+        let mut b = blocks();
+        b.motion.retain(|x| x.id == "motion_ink");
+        b.motion[0].id = "motion_custom".into();
+        let p = b.pinned(1);
+        assert_eq!(p.motion.len(), 1);
+        random(&p, 7);
     }
 
     #[test]

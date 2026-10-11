@@ -277,7 +277,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             start: b.start,
             end: ends[i],
             palette: (hash(seed, 2) % sc.palettes.len().max(1) as u64) as usize,
-            variations: variations(a, sc, seed, b.start, ends[i], single),
+            variations: variations(a, sc, seed, b.start, ends[i], single, req.engine),
             scene,
             seed,
             locked: false,
@@ -322,7 +322,7 @@ fn snap(a: &Analysis, t: f64, bar: f64) -> f64 {
         .unwrap_or(t)
 }
 
-fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single: bool) -> Vec<Variation> {
+fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single: bool, engine: u32) -> Vec<Variation> {
     let min_bars = if single { 8 } else { 16 };
     // (time, is_drop); a drop on a phrase boundary counts as a drop.
     let mut marks: Vec<(f64, bool)> = a
@@ -344,7 +344,12 @@ fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single:
         let mut rng = Rng(hash(seed, 100 + k as u64));
         let (step, hue_step) = if drop { (0.6, 0.25) } else { (0.25, 0.08) };
         for (v, p) in params.iter_mut().zip(&sc.params) {
-            *v = p.nudge(*v, rng.signed() * step);
+            // rng drawn either way so later picks don't shift; engine 2 holds fixed (structural) params,
+            // engine 1 keeps its frozen behaviour.
+            let amt = rng.signed() * step;
+            if engine < 2 || !p.fixed {
+                *v = p.nudge(*v, amt);
+            }
         }
         hue = (hue + rng.signed() * hue_step).rem_euclid(1.0);
         out.push(Variation { time, params: params.clone(), hue_shift: hue });
@@ -746,6 +751,10 @@ mod tests {
             moved |= f.a.p0[1] != frame_state(&flat, &a, &scenes, t, 64, 64, Quality::Draft).a.p0[1];
         }
         assert!(moved);
+        // Engine 2 holds a fixed param at its first draw across phrase/drop variations.
+        let p2 = plan(&PlanRequest { engine: 2, ..req }).unwrap();
+        assert!(p2.segments.iter().all(|s| s.variations.iter().all(|v| v.params[0] == s.variations[0].params[0])));
+        assert!(p2.segments.iter().any(|s| s.variations.len() > 1));
     }
 
     #[test]
