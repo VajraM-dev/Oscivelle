@@ -1,0 +1,16 @@
+kind = "emitter"
+description = "Architecture: a raymarched 3D field of columns, monoliths, stepped ziggurats or floating cubes whose heights pulse per row with bass/mid/high, tops flaring on kicks"
+[[param]]
+name = "speed"      # camera travel; multiplies time()
+min = 0.6
+max = 1.4
+fixed = true
+[[param]]
+name = "cell"       # grid spacing; the camera path depends on it
+min = 1.0
+max = 1.6
+fixed = true
+[[param]]
+name = "light"      # key light strength
+min = 0.7
+max = 1.3

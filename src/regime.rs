@@ -29,6 +29,27 @@ pub fn get(name: &str) -> Option<&'static Regime> {
     REGIMES.iter().find(|r| r.name == name)
 }
 
+/// The judge's ranges for a regime, recipe (genome::TEMPLATES) and grammar (genome::GRAMMARS): stateless looks
+/// redraw every frame, so they move more and carry more fine detail than trails; dual looks stack two emitters
+/// and clip a bit more (depth looks gate as stateless whatever the recipe); still looks hold the camera, so only their emitter moves; grid looks may hold between kicks.
+// ponytail: hand-set factors; retune from the gate's smoke renders if a recipe or grammar never (or always) passes.
+pub fn gate(r: &Regime, template: &str, grammar: &str) -> Thresholds {
+    let th = r.th;
+    // Depth looks are 3D cameras: even in feedback they move and carry detail like a stateless look.
+    let template = if grammar == "depth" { "stateless" } else { template };
+    let th = match template {
+        "stateless" => Thresholds { motion: (th.motion.0, th.motion.1 * 1.5), max_grain: th.max_grain * 1.5, ..th },
+        "dual" => Thresholds { max_clipped: th.max_clipped * 1.3, ..th },
+        _ => th,
+    };
+    match grammar {
+        "still" => Thresholds { motion: (th.motion.0 * 0.25, th.motion.1), ..th },
+        // Grid looks (motion_stutter) hold still between kicks.
+        "grid" => Thresholds { motion: (th.motion.0 * 0.5, th.motion.1), ..th },
+        _ => th,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +62,19 @@ mod tests {
             assert!((0.5..=1.5).contains(&r.decay) && (0.3..=2.0).contains(&r.drive), "{}", r.name);
         }
         assert!(get("mono").is_some() && get("nope").is_none());
+    }
+
+    #[test]
+    fn recipes_and_still_widen_the_regime_gate() {
+        let r = get("calm").unwrap();
+        assert_eq!(gate(r, "", "").motion, r.th.motion);
+        let s = gate(r, "stateless", "radial");
+        assert!(s.motion.1 > r.th.motion.1 && s.max_grain > r.th.max_grain && s.mean == r.th.mean);
+        assert!(gate(r, "dual", "").max_clipped > r.th.max_clipped);
+        let still = gate(r, "", "still");
+        assert!(still.motion.0 < r.th.motion.0 && still.motion.1 == r.th.motion.1);
+        let grid = gate(r, "", "grid");
+        assert!(still.motion.0 < grid.motion.0 && grid.motion.0 < r.th.motion.0 && grid.motion.1 == r.th.motion.1);
+        assert_eq!(gate(r, "", "depth").max_grain, s.max_grain, "depth feedback gates like stateless");
     }
 }

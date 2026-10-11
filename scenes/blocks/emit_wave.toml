@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Waveform: an oscilloscope trace across the frame at a seeded height; its wiggle is built from the four bands and kicks punch it"
+[[param]]
+name = "amplitude"
+min = 0.4
+max = 1.2
+[[param]]
+name = "width"      # glow width, centred units
+min = 0.008
+max = 0.03
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

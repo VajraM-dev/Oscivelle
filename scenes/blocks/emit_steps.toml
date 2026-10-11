@@ -1,0 +1,16 @@
+kind = "emitter"
+description = "Step sequencer: a 16-step grid of rounded pads; a seeded pattern switches pads on and the playhead column walks one step per 16th, flashing on kicks"
+[[param]]
+name = "rows"
+min = 4.0
+max = 8.0
+fixed = true
+[[param]]
+name = "density"    # share of pads switched on
+min = 0.2
+max = 0.6
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

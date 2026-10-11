@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Halftone: a printed dot screen at a seeded angle; dot size follows a slowly drifting noise image, kicks swell every dot"
+[[param]]
+name = "dots"       # dots per unit
+min = 8.0
+max = 24.0
+[[param]]
+name = "size"       # largest dot radius, share of a cell
+min = 0.7
+max = 1.0
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

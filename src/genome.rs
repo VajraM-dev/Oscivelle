@@ -42,6 +42,18 @@ pub struct Genome {
     pub blend: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub regime: String,
+    /// Engine-2 recipe (genome::TEMPLATES; "" = the feedback recipe), the second emitter of a "dual" look,
+    /// and the display-only comp block (kind comp; "" = none). Empty = left out of the JSON, so saved ids hold.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub template: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub emitter_b: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comp: String,
+    /// Engine-2 visual grammar (genome::GRAMMARS; "" = unconstrained): which blocks the look and its phrase
+    /// variants pick from (BLOCK_TAGS). Empty = left out of the JSON, so saved ids hold.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub grammar: String,
 }
 
 impl Genome {
@@ -58,13 +70,14 @@ impl Genome {
             2 => &mut self.colour,
             3 => &mut self.backdrop,
             4 => &mut self.overlay,
-            _ => &mut self.space,
+            5 => &mut self.space,
+            _ => &mut self.comp,
         })
     }
 
     /// Uses the engine-2 template (has any engine-2 gene).
     pub fn is_v2(&self) -> bool {
-        !self.space.is_empty() || !self.blend.is_empty() || !self.regime.is_empty()
+        !self.space.is_empty() || !self.blend.is_empty() || !self.regime.is_empty() || !self.template.is_empty()
     }
 
     /// Has a backdrop or overlay (so it also has a layer pass).
@@ -74,11 +87,17 @@ impl Genome {
 
     /// Keeps only finite tuned values whose key names a param of this genome's blocks.
     pub fn prune(&mut self, blocks: &Blocks) {
-        let (Ok(parts), Ok(layers), Ok(space)) = (blocks.parts(self), blocks.layer_parts(self), blocks.space_part(self)) else { return self.params.clear() };
+        let (Ok(parts), Ok(layers), Ok(space), Ok(eb), Ok(comp)) =
+            (blocks.parts(self), blocks.layer_parts(self), blocks.space_part(self), blocks.emitter_b_part(self), blocks.comp_part(self))
+        else {
+            return self.params.clear();
+        };
         let keys: Vec<String> = parts
             .into_iter()
             .chain(layers.into_iter().flatten())
             .chain(space)
+            .chain(eb)
+            .chain(comp)
             .flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name)))
             .collect();
         self.params.retain(|k, v| keys.contains(k) && v.is_finite());
@@ -109,6 +128,8 @@ pub struct Blocks {
     pub overlay: Vec<Block>,
     /// Engine-2 space folds (optional kind).
     pub space: Vec<Block>,
+    /// Engine-2 display-only framings (optional kind).
+    pub comp: Vec<Block>,
     /// Palette bank, sRGB hex.
     pub palettes: Vec<[String; 4]>,
 }
@@ -120,12 +141,12 @@ struct BlockToml {
     params: Vec<ParamRange>,
 }
 
-/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last three (layers, space) are optional.
-pub const KINDS: [&str; 6] = ["motion", "emitter", "colour", "backdrop", "overlay", "space"];
+/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last four (layers, space, comp) are optional.
+pub const KINDS: [&str; 7] = ["motion", "emitter", "colour", "backdrop", "overlay", "space", "comp"];
 
 /// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13);
-/// space (engine 2) uses slots 14..15.
-const SLOTS: [usize; 6] = [3, 3, 2, 4, 2, 2];
+/// space (engine 2) uses slots 14..15; comp (engine 2, display only) has no params.
+const SLOTS: [usize; 7] = [3, 3, 2, 4, 2, 2, 0];
 
 fn kind_index(kind: &str) -> Result<usize> {
     KINDS.iter().position(|k| *k == kind).with_context(|| format!("unknown kind {kind}"))
@@ -159,6 +180,10 @@ const V2_BLOCKS: &[&str] = &[
     "space_droste", "space_hyper", "space_kaleido", "space_kifs", "space_mirror", "space_polar",
     "motion_erode", "motion_etch", "motion_mosh", "motion_sort",
     "emit_cells", "emit_hypertile", "emit_kifs3d", "emit_lyapunov", "emit_mandelbox", "emit_orbit", "emit_sdftunnel", "emit_truchet", "emit_warpfbm",
+    "comp_echo", "comp_kaleido", "comp_mirror", "comp_slitscan",
+    "motion_drift", "motion_shear", "motion_sink", "motion_still", "motion_stutter", "space_bands", "space_pixel", "space_tile",
+    "emit_halftone", "emit_scan", "emit_scatter", "emit_steps", "emit_wave",
+    "emit_metaballs", "emit_pillars", "emit_terrain", "emit_world",
 ];
 
 impl Blocks {
@@ -169,7 +194,7 @@ impl Blocks {
             palettes: Vec<[String; 4]>,
         }
         let pal: Pal = toml::from_str(&std::fs::read_to_string(dir.join("palettes.toml")).context("blocks/palettes.toml")?)?;
-        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], space: vec![], palettes: pal.palettes };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], space: vec![], comp: vec![], palettes: pal.palettes };
         let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| Some(e.ok()?.path())).collect();
         paths.sort();
         for path in paths {
@@ -215,9 +240,19 @@ impl Blocks {
         Self::opt(&self.space, &g.space)
     }
 
+    /// The genome's comp block ("" = none), or an error naming an unknown id.
+    pub fn comp_part(&self, g: &Genome) -> Result<Option<&Block>> {
+        Self::opt(&self.comp, &g.comp)
+    }
+
+    /// The second emitter of a "dual" look ("" = none), or an error naming an unknown id.
+    pub fn emitter_b_part(&self, g: &Genome) -> Result<Option<&Block>> {
+        Self::opt(&self.emitter, &g.emitter_b)
+    }
+
     /// The blocks of `kind`.
     pub fn list(&self, kind: &str) -> Result<&Vec<Block>> {
-        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space][kind_index(kind)?])
+        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space, &self.comp][kind_index(kind)?])
     }
 
     fn list_mut(&mut self, kind: &str) -> Result<&mut Vec<Block>> {
@@ -227,7 +262,8 @@ impl Blocks {
             2 => &mut self.colour,
             3 => &mut self.backdrop,
             4 => &mut self.overlay,
-            _ => &mut self.space,
+            5 => &mut self.space,
+            _ => &mut self.comp,
         })
     }
 
@@ -260,31 +296,47 @@ impl Blocks {
             backdrop: pick(&self.backdrop, |g| &g.backdrop),
             overlay: pick(&self.overlay, |g| &g.overlay),
             space: pick(&self.space, |g| &g.space),
+            comp: pick(&self.comp, |g| &g.comp),
             palettes,
         }
     }
 
     /// The frozen library of `engine` (1 or 2): only its block ids, in load (sorted) order, and its palettes.
     pub fn pinned(&self, engine: u32) -> Blocks {
-        let ok = |id: &str| V1_BLOCKS.contains(&id) || (engine >= 2 && V2_BLOCKS.contains(&id));
+        let mut b = self.keep(&KINDS, |id| V1_BLOCKS.contains(&id) || (engine >= 2 && V2_BLOCKS.contains(&id)));
+        b.palettes.truncate(V1_PALETTES);
+        b
+    }
+
+    /// The blocks a look of `grammar` may use ("" = all): motion, emitter, space and comp blocks tagged with it
+    /// in BLOCK_TAGS (untagged ones only under ""); colours, layers and palettes all.
+    pub fn grammar_pool(&self, grammar: &str) -> Blocks {
+        if grammar.is_empty() {
+            return self.clone();
+        }
+        self.keep(&["motion", "emitter", "space", "comp"], |id| BLOCK_TAGS.iter().any(|(t, gs, _)| *t == id && gs.split(' ').any(|g| g == grammar)))
+    }
+
+    /// A copy with only the `kinds` blocks whose id is `ok`.
+    fn keep(&self, kinds: &[&str], ok: impl Fn(&str) -> bool) -> Blocks {
         let mut b = self.clone();
-        for k in KINDS {
+        for k in kinds {
             b.list_mut(k).expect("known kind").retain(|x| ok(&x.id));
         }
-        // ponytail: a custom --scenes folder may hold none of the frozen ids; a required kind left empty
-        // would panic in random()/nth_id (i % 0), so it keeps its unpinned list (unreproducible, but runs).
+        // ponytail: a custom --scenes folder may hold none of the frozen (or tagged) ids; a required kind left
+        // empty would panic in random()/nth_id (i % 0), so it keeps its whole list (unreproducible / off-grammar,
+        // but runs).
         for k in ["motion", "emitter", "colour"] {
             if b.list(k).expect("known kind").is_empty() {
                 *b.list_mut(k).expect("known kind") = self.list(k).expect("known kind").clone();
             }
         }
-        b.palettes.truncate(V1_PALETTES);
         b
     }
 
     /// The range of param `key` (see `param_key`).
     fn param(&self, key: &str) -> Option<&ParamRange> {
-        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space].into_iter().flatten();
+        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space, &self.comp].into_iter().flatten();
         all.flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty() && param_key(&b.id, &p.name) == key)).next()
     }
 }
@@ -317,7 +369,7 @@ fn OP(i: i32) -> f32 { return P(12 + i); }
 {OVERLAY}
 fn scene(uv: vec2<f32>) -> vec4<f32> {
     let p = to_centered(uv);
-    var c = backdrop(p) + prev(uv) * {FEEDBACK};
+    var c = backdrop(p) + {FB} * {FEEDBACK};
     let o = overlay(p);
     c = mix(c, o.rgb, clamp(o.a, 0.0, 1.0));
     return vec4<f32>(c, 1.0);
@@ -350,8 +402,110 @@ fn scene(uv: vec2<f32>) -> vec4<f32> {
 "#;
 const NO_SPACE: &str = "fn space(p: vec2<f32>) -> vec2<f32> { return p; }";
 
+/// Stateless recipe: the emitter alone, drawn fresh every frame (no trails; crisp, best with raymarched or
+/// dense emitters). Shares TEMPLATE_V2's head; motion is defined but unused.
+const STATELESS_SCENE: &str = r#"fn scene(uv: vec2<f32>) -> vec4<f32> {
+    let p = space(to_centered(uv));
+    let drive = {DRIVE} * (0.9 + 0.6 * punch() + 0.3 * snare() + 0.6 * drop_env()) * (1.0 - 0.6 * anticipation());
+    var col = colour(emit(p)) * drive;
+    col = col / (1.0 + 0.12 * dot(col, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    return vec4<f32>(col, 1.0);
+}
+"#;
+
+/// Dual recipe: the feedback recipe with two emitters; the brighter wins each pixel, B is shown half a hue turn
+/// away and swells on snares, so two worlds interleave.
+const DUAL_SCENE: &str = r#"fn scene(uv: vec2<f32>) -> vec4<f32> {
+    let p = space(to_centered(uv));
+    var col = prev(motion(to_uv(p))) * min(motion_decay() * {DECAY}, 0.995);
+    let drive = {DRIVE} * (0.5 + 0.9 * punch() + 0.3 * snare() + 0.6 * drop_env()) * (1.0 - 0.6 * anticipation());
+    let a = emit(p);
+    let b = emit_b(p) * vec2<f32>(0.7 + 0.6 * snare(), 1.0);
+    let e = select(a, vec2<f32>(b.x, fract(b.y + 0.5)), b.x > a.x);
+    col = blend(col, colour(e) * drive);
+    col = col / (1.0 + 0.12 * dot(col, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    return vec4<f32>(col, 1.0);
+}
+"#;
+
 /// Engine-2 blend modes of the emitter over the feedback; "" = add (the engine-1 recipe).
 pub const BLENDS: [&str; 4] = ["screen", "difference", "multiply", "lighten"];
+
+/// Engine-2 recipes besides feedback ("" in Genome::template): "stateless" draws the emitter fresh every frame
+/// (no trails, crisp 3D); "dual" adds a second emitter (Genome::emitter_b) over the feedback.
+pub const TEMPLATES: [&str; 2] = ["stateless", "dual"];
+
+/// Engine-2 visual grammars, one per generated segment (drawn before any block, evolve::best_v2): radial
+/// (the classic library: tunnels, folds, spins), flow (advected fields, no centre), grid (tiles, mosaics,
+/// sequencers), scroll (everything slides one way), still (the camera holds; only the emitter moves) and depth
+/// (a raymarched 3D emitter, mostly crisp: random_v2 picks "stateless" 3/4 of the time).
+pub const GRAMMARS: [&str; 6] = ["radial", "flow", "grid", "scroll", "still", "depth"];
+
+/// The visual grammar of the segment with `seed` (drawn before any block, evolve::best_v2).
+pub fn grammar_for(seed: u64) -> &'static str {
+    GRAMMARS[(crate::types::hash(seed, 0x6A4D) % GRAMMARS.len() as u64) as usize]
+}
+
+/// The grammars each pinned engine-2 motion, emitter, space and comp block belongs to, and what it looks like
+/// (R time-driven rotation, Z steady radial zoom, T tunnel/vanishing point, C centred symmetry, D raymarched
+/// 3D camera, F flowing field; read by the variety test and the scratchpad sim). Frozen like V2_BLOCKS:
+/// retagging changes what new seeds pick, never a saved plan. Colours, layers and palettes suit every grammar.
+const BLOCK_TAGS: &[(&str, &str, &str)] = &[
+    ("comp_echo", "radial", "Z"),
+    ("comp_kaleido", "radial", "RC"),
+    ("comp_mirror", "radial", "C"),
+    ("comp_slitscan", "radial flow grid scroll still", ""),
+    ("emit_blobs", "radial flow still", ""),
+    ("emit_cells", "radial flow grid still", ""),
+    ("emit_clouds", "radial flow scroll", ""),
+    ("emit_contours", "radial flow still", "F"),
+    ("emit_filaments", "radial flow", "F"),
+    ("emit_halftone", "grid still", ""),
+    ("emit_hypertile", "radial", "C"),
+    ("emit_kifs3d", "radial depth", "RD"),
+    ("emit_lissajous", "radial", "RC"),
+    ("emit_lyapunov", "radial flow still", ""),
+    ("emit_metaballs", "depth", "D"),
+    ("emit_pillars", "depth", "D"),
+    ("emit_terrain", "depth", "D"),
+    ("emit_world", "depth", "D"),
+    ("emit_mandelbox", "radial depth", "RD"),
+    ("emit_orbit", "radial", "C"),
+    ("emit_polygon", "radial", "RZC"),
+    ("emit_rings", "radial", "ZC"),
+    ("emit_scan", "grid scroll", ""),
+    ("emit_scatter", "flow scroll still", ""),
+    ("emit_sdftunnel", "radial depth", "RZTD"),
+    ("emit_stars", "radial scroll still", ""),
+    ("emit_steps", "grid still", ""),
+    ("emit_truchet", "radial grid scroll", ""),
+    ("emit_warpfbm", "radial flow", "F"),
+    ("emit_wave", "scroll still", ""),
+    ("motion_deepzoom", "radial", "RZT"),
+    ("motion_drift", "flow scroll depth", ""),
+    ("motion_erode", "radial", "Z"),
+    ("motion_etch", "radial flow", "F"),
+    ("motion_ink", "radial", "FZ"),
+    ("motion_kaleido", "radial", "RZC"),
+    ("motion_mosh", "radial grid", ""),
+    ("motion_push", "radial", "RZT"),
+    ("motion_shear", "grid scroll", ""),
+    ("motion_sink", "flow", "FZ"),
+    ("motion_sort", "radial grid scroll", ""),
+    ("motion_still", "still depth", ""),
+    ("motion_stutter", "grid still", ""),
+    ("motion_swirl", "radial flow", "F"),
+    ("motion_tunnel", "radial", "RZT"),
+    ("space_bands", "grid scroll", ""),
+    ("space_droste", "radial", "RZTC"),
+    ("space_hyper", "radial", "C"),
+    ("space_kaleido", "radial", "RC"),
+    ("space_kifs", "radial", "C"),
+    ("space_mirror", "radial", "C"),
+    ("space_pixel", "grid still", ""),
+    ("space_polar", "radial", "C"),
+    ("space_tile", "grid", ""),
+];
 
 fn blend_wgsl(name: &str) -> String {
     let e = match name {
@@ -377,7 +531,19 @@ pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
         return Ok(TEMPLATE.replace("{IMG}", &img_wgsl(g)).replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl));
     }
     let r = crate::regime::get(&g.regime);
-    Ok(TEMPLATE_V2
+    // A recipe swaps the scene function; everything above it is TEMPLATE_V2's (the feedback recipe is unchanged).
+    let head = &TEMPLATE_V2[..TEMPLATE_V2.find("fn scene(").expect("TEMPLATE_V2 has a scene fn")];
+    let tpl = match g.template.as_str() {
+        "stateless" => format!("{head}{STATELESS_SCENE}"),
+        "dual" => {
+            let eb = blocks.emitter_b_part(g)?.context("a dual look needs emitter_b")?;
+            // Renamed so both emitters link: emit -> emit_b, its params EP -> EP2 (slots 8..10).
+            let b = eb.wgsl.replace("fn emit(", "fn emit_b(").replace("EP(", "EP2(");
+            format!("{head}fn EP2(i: i32) -> f32 {{ return P(8 + i); }}\n{b}\n{DUAL_SCENE}")
+        }
+        _ => TEMPLATE_V2.to_string(),
+    };
+    Ok(tpl
         .replace("{IMG}", &img_wgsl(g))
         .replace("{SPACE}", blocks.space_part(g)?.map_or(NO_SPACE, |b| &b.wgsl))
         .replace("{MOTION}", &m.wgsl)
@@ -390,35 +556,49 @@ pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
 
 /// Layer pass source (None when the genome has no layer blocks).
 pub fn layers_wgsl(g: &Genome, blocks: &Blocks) -> Result<Option<String>> {
-    if !g.has_layers() {
+    if !g.has_layers() && g.comp.is_empty() {
         return Ok(None);
     }
     let [bd, ov] = blocks.layer_parts(g)?;
     let fb = g.feedback.unwrap_or(1.0).clamp(0.0, 1.5);
-    Ok(Some(
-        LAYERS
-            .replace("{IMG}", &img_wgsl(g))
-            .replace("{FONT}", &crate::font::wgsl(&g.text))
-            .replace("{BACKDROP}", bd.map_or(NO_BACKDROP, |b| &b.wgsl))
-            .replace("{OVERLAY}", ov.map_or(NO_OVERLAY, |b| &b.wgsl))
-            .replace("{FEEDBACK}", &format!("{fb:?}")),
-    ))
+    // Engine 2: a comp block reframes the feedback for display only (this pass is never fed back). Without one
+    // the source is byte-for-byte the old one.
+    let comp = blocks.comp_part(g)?;
+    let src = LAYERS
+        .replace("{FB}", if comp.is_some() { "comp(uv)" } else { "prev(uv)" })
+        .replace("{IMG}", &img_wgsl(g))
+        .replace("{FONT}", &crate::font::wgsl(&g.text))
+        .replace("{BACKDROP}", bd.map_or(NO_BACKDROP, |b| &b.wgsl))
+        .replace("{OVERLAY}", ov.map_or(NO_OVERLAY, |b| &b.wgsl))
+        .replace("{FEEDBACK}", &format!("{fb:?}"));
+    Ok(Some(match comp {
+        Some(c) => src + "\n" + &c.wgsl,
+        None => src,
+    }))
 }
 
-/// In-memory Scene for a genome: 8 param slots, 14 with layers, 16 with a space block (each block's params padded to its slot count)
+/// In-memory Scene for a genome: 8 param slots, 14 with layers or a dual emitter, 16 with a space block (each block's params padded to its slot count)
 /// and the genome's palette. `wgsl_path` = <gen_dir>/<id>.wgsl (written by `write`).
 /// A tuned value (`g.params`) narrows its range to value ± 15% of the width (fixed: exactly value).
 pub fn to_scene(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     let pad = ParamRange { name: String::new(), min: 0.0, max: 0.0, fixed: true };
     let [m, e, c] = blocks.parts(g)?;
     let [bd, ov] = blocks.layer_parts(g)?;
+    let eb = blocks.emitter_b_part(g)?;
+    if eb.is_some() && g.has_layers() {
+        bail!("{}: a dual-emitter look can't have a backdrop or overlay (they share param slots)", g.id());
+    }
     let mut slots = vec![(Some(m), SLOTS[0]), (Some(e), SLOTS[1]), (Some(c), SLOTS[2])];
     if g.has_layers() {
         slots.extend([(bd, SLOTS[3]), (ov, SLOTS[4])]);
     }
-    // Space params live in slots 14..15 (after the layers' 8..13, padded when there are none).
+    // A dual look's second emitter takes slots 8..10 (EP2), padded to 14.
+    if let Some(eb) = eb {
+        slots.extend([(Some(eb), SLOTS[1]), (None, SLOTS[3] + SLOTS[4] - SLOTS[1])]);
+    }
+    // Space params live in slots 14..15 (padded when nothing fills 8..13).
     if let Some(sp) = blocks.space_part(g)? {
-        if !g.has_layers() {
+        if !g.has_layers() && eb.is_none() {
             slots.extend([(None, SLOTS[3]), (None, SLOTS[4])]);
         }
         slots.push((Some(sp), SLOTS[5]));
@@ -530,6 +710,10 @@ pub fn random(blocks: &Blocks, r: u64) -> Genome {
 /// Core --layers: gives a look a backdrop (one showing a picture only when there are plates), an overlay
 /// half the time (text overlays only when there is text), a plate and the text. `r` = 64-bit hash.
 pub fn dress(g: &Genome, blocks: &Blocks, r: u64, plates: usize, text: &str) -> Genome {
+    // A dual look's second emitter uses the layer slots.
+    if g.template == "dual" {
+        return g.clone();
+    }
     // ponytail: needs are sniffed from the block source; a toml flag if a block ever calls them indirectly.
     let backs: Vec<&Block> = blocks.backdrop.iter().filter(|b| plates > 0 || !b.wgsl.contains("img(")).collect();
     let overs: Vec<&Block> = blocks.overlay.iter().filter(|b| !text.is_empty() || !b.wgsl.contains("text_px(")).collect();
@@ -566,41 +750,107 @@ fn pick_blend(h: u64) -> String {
     if h % 2 == 0 { String::new() } else { BLENDS[((h >> 8) % BLENDS.len() as u64) as usize].into() }
 }
 
-/// Engine-2 random genome: `random`'s blocks plus a space fold (none a sixth of the time), a blend mode
-/// (add half the time), a cosine palette half the time, and the segment's `regime` with its finishing look
-/// (mono tints with palette colour 2). `r` = 64-bit hash.
-pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Genome {
+/// Engine-2 random genome from `grammar`'s blocks (Blocks::grammar_pool): `random`'s blocks plus a space fold
+/// a third of the time, a blend mode (add half the time), a cosine palette half the time, a recipe (stateless
+/// or dual a sixth of the time each), a comp framing a third of the time, and the segment's `regime` with its
+/// finishing look (mono tints with palette colour 2). `r` = 64-bit hash.
+pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime, grammar: &str) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
+    // Only the grammar's blocks ("" = all).
+    let blocks = &blocks.grammar_pool(grammar);
     let mut g = random(blocks, r);
-    if !blocks.space.is_empty() && h(1) % 6 != 0 {
+    // A fold a third of the time (when the grammar has any).
+    if !blocks.space.is_empty() && h(1) % 3 == 0 {
         g.space = nth_id(&blocks.space, h(2) as usize);
     }
     g.blend = pick_blend(h(3));
     if h(4) % 2 == 0 {
         g.palette = cosine_palette(h(5));
     }
-    g.regime = regime.name.into();
-    g.post = regime.post;
-    if g.post.tint_amount > 0.0 {
-        g.post.tint = crate::scenes::hex(&g.palette[2]).unwrap_or([1.0; 3]);
+    // Recipe: stateless a sixth of the time, dual (a second, different emitter) a sixth, else feedback.
+    // Depth: crisp 3D (stateless) 3/4 of the time, else feedback for light trails; never dual.
+    match h(6) % 6 {
+        _ if grammar == "depth" => {
+            if h(0xD3) % 4 != 0 {
+                g.template = TEMPLATES[0].into();
+            }
+        }
+        0 => g.template = TEMPLATES[0].into(),
+        1 if blocks.emitter.len() > 1 => {
+            let others: Vec<&Block> = blocks.emitter.iter().filter(|b| b.id != g.emitter).collect();
+            g.template = TEMPLATES[1].into();
+            g.emitter_b = others[(h(7) % others.len() as u64) as usize].id.clone();
+        }
+        _ => {}
     }
+    // A display-only comp framing a third of the time.
+    if !blocks.comp.is_empty() && h(8) % 3 == 0 {
+        g.comp = nth_id(&blocks.comp, h(9) as usize);
+    }
+    g.regime = regime.name.into();
+    g.grammar = grammar.into();
+    g.post = regime.post;
+    retint(&mut g);
     g
 }
 
+/// A mono finishing look tints with palette colour 2.
+fn retint(g: &mut Genome) {
+    if g.post.tint_amount > 0.0 {
+        g.post.tint = crate::scenes::hex(&g.palette[2]).unwrap_or([1.0; 3]);
+    }
+}
+
+/// End of a change to `g`: retint if the palette changed, then prune.
+fn settle(g: &Genome, mut out: Genome, blocks: &Blocks) -> Genome {
+    if out.palette != g.palette {
+        retint(&mut out);
+    }
+    // A dual look's two emitters must differ (same id = duplicate helper defs): keep the parent's.
+    if out.template == "dual" && out.emitter == out.emitter_b {
+        out.emitter = g.emitter.clone();
+    }
+    out.prune(blocks);
+    out
+}
+
 /// Engine-2 mutation: a third of the time swap the space fold (or drop it), a third the blend mode, else
-/// `mutate` (blocks / palette / params). The regime never changes: it belongs to the segment.
+/// `mutate` (blocks / palette / params), from the genome's grammar's blocks. The regime and grammar never
+/// change: they belong to the segment.
 pub fn mutate_v2(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
-    let mut out = match h(1) % 3 {
+    let blocks = &blocks.grammar_pool(&g.grammar);
+    let out = match h(1) % 3 {
         0 if !blocks.space.is_empty() => Genome { space: if h(2) % 4 == 0 { String::new() } else { nth_id(&blocks.space, h(3) as usize) }, ..g.clone() },
         1 => Genome { blend: pick_blend(h(4)), ..g.clone() },
         _ => mutate(g, blocks, r),
     };
-    if out.palette != g.palette && out.post.tint_amount > 0.0 {
-        out.post.tint = crate::scenes::hex(&out.palette[2]).unwrap_or([1.0; 3]);
+    settle(g, out, blocks)
+}
+
+/// Engine-2 phrase variant: the same look with one structural change, inside its grammar: a fold or comp
+/// framing dropped (half the time one is there) or swapped for another of the grammar's, or a fresh cosine
+/// palette. Never the motion, emitter, blend, recipe, grammar or regime (those can go black, and variants
+/// aren't judged). `r` = 64-bit hash.
+// ponytail: unjudged; run variants through the judge if one ever renders black.
+pub fn vary(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
+    let h = |k: u64| crate::types::hash(r, k);
+    let pool = blocks.grammar_pool(&g.grammar);
+    // The new id for `cur` of `list`: "" half the time one is set, else another id; None = no change possible.
+    let other = |list: &[Block], cur: &str, k: u64| -> Option<String> {
+        let ids: Vec<&str> = list.iter().map(|b| b.id.as_str()).filter(|id| *id != cur).collect();
+        if ids.is_empty() || (!cur.is_empty() && h(k) % 2 == 0) {
+            return (!cur.is_empty()).then(String::new);
+        }
+        Some(ids[(h(k + 10) % ids.len() as u64) as usize].to_string())
+    };
+    let mut out = g.clone();
+    match h(1) % 3 {
+        0 => if let Some(s) = other(&pool.space, &g.space, 2) { out.space = s } else { out.palette = cosine_palette(h(4)) },
+        1 => if let Some(c) = other(&pool.comp, &g.comp, 3) { out.comp = c } else { out.palette = cosine_palette(h(4)) },
+        _ => out.palette = cosine_palette(h(4)),
     }
-    out.prune(blocks);
-    out
+    settle(g, out, blocks)
 }
 
 fn nth_id(list: &[Block], i: usize) -> String {
@@ -618,6 +868,18 @@ mod tests {
     fn genome() -> Genome {
         let pal = ["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()];
         Genome { motion: "motion_ink".into(), emitter: "emit_rings".into(), colour: "colour_hue".into(), palette: pal, params: BTreeMap::new(), ..Default::default() }
+    }
+
+    #[test]
+    fn emitters_survive_the_dual_rename() {
+        // dual renames `fn emit(` -> `fn emit_b(` and `EP(` -> `EP2(` by plain text replace.
+        for b in &blocks().emitter {
+            assert_eq!(b.wgsl.matches("fn emit(").count(), 1, "{}: one fn emit(", b.id);
+            for (k, _) in b.wgsl.match_indices("EP(") {
+                let prev = b.wgsl[..k].chars().next_back();
+                assert!(!prev.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_'), "{}: identifier ending in EP(", b.id);
+            }
+        }
     }
 
     #[test]
@@ -707,6 +969,7 @@ mod tests {
         assert_eq!((v1.emitter.len(), v1.colour.len(), v1.overlay.len(), v1.space.len(), v1.palettes.len()), (8, 5, 3, 0, 30));
         let v2 = b.pinned(2);
         assert!(v1.motion.iter().all(|m| v2.motion.iter().any(|x| x.id == m.id)));
+        assert!(v1.comp.is_empty());
     }
 
     fn space_block(id: &str, wgsl: &str) -> Block {
@@ -737,8 +1000,8 @@ mod tests {
             b.add("space", space_block(&format!("space_t{k}"), "")).unwrap();
         }
         let reg = &crate::regime::REGIMES[1];
-        let gs: Vec<Genome> = (0..48).map(|r| random_v2(&b, crate::types::hash(9, r), reg)).collect();
-        assert_eq!(gs[3], random_v2(&b, crate::types::hash(9, 3), reg));
+        let gs: Vec<Genome> = (0..96).map(|r| random_v2(&b, crate::types::hash(9, r), reg, "")).collect();
+        assert_eq!(gs[3], random_v2(&b, crate::types::hash(9, 3), reg, ""));
         let distinct = |f: &dyn Fn(&Genome) -> String| gs.iter().map(f).collect::<std::collections::HashSet<_>>().len();
         assert_eq!(distinct(&|g| g.space.clone()), 4, "none + 3 folds");
         assert_eq!(distinct(&|g| g.blend.clone()), 5, "add + 4 modes");
@@ -747,7 +1010,7 @@ mod tests {
             assert!(crate::scenes::palette(&g.palette).is_ok());
             assert_eq!(mutate_v2(g, &b, crate::types::hash(4, i as u64)).regime, reg.name);
         }
-        let mono = random_v2(&b, 5, crate::regime::get("mono").unwrap());
+        let mono = random_v2(&b, 5, crate::regime::get("mono").unwrap(), "");
         assert_eq!(mono.post.tint, crate::scenes::hex(&mono.palette[2]).unwrap());
         for i in 0..32 {
             let m = mutate_v2(&mono, &b, crate::types::hash(6, i));
@@ -779,12 +1042,185 @@ mod tests {
     #[test]
     fn engine2_block_helpers_are_prefixed() {
         let b = blocks().pinned(2);
-        let contract = ["motion", "motion_decay", "emit", "colour", "space"];
-        for blk in [&b.motion, &b.emitter, &b.space].into_iter().flatten().filter(|x| V2_BLOCKS.contains(&x.id.as_str())) {
+        let contract = ["motion", "motion_decay", "emit", "colour", "space", "comp"];
+        for blk in [&b.motion, &b.emitter, &b.space, &b.comp].into_iter().flatten().filter(|x| V2_BLOCKS.contains(&x.id.as_str())) {
             for line in blk.wgsl.lines().filter(|l| l.starts_with("fn ") || l.starts_with("const ")) {
                 let name = line.split([' ', '(', ':']).nth(1).unwrap_or_default();
                 assert!(contract.contains(&name) || name.starts_with(&blk.id), "{}: helper {name} needs the prefix {}", blk.id, blk.id);
             }
         }
+    }
+
+    /// Saved engine-2 plans must keep rendering the same: a phase-1 engine-2 look's sources and params
+    /// (captured before phase 2).
+    #[test]
+    fn engine2_saved_looks_are_frozen() {
+        let b = blocks().pinned(2);
+        let sig = |s: String| format!("{:016x}", fnv1a(s.as_bytes()));
+        let g = Genome { space: "space_kaleido".into(), blend: "screen".into(), regime: "glitch".into(), ..genome() };
+        let layered = Genome { backdrop: "back_sky".into(), overlay: "over_hud".into(), plate: Some(1), feedback: Some(0.6), text: "HI".into(), ..g.clone() };
+        assert_eq!(sig(wgsl(&g, &b).unwrap()), "c741eb434d028a27");
+        assert_eq!(sig(layers_wgsl(&layered, &b).unwrap().unwrap()), "f1291d26fa6fffb5");
+        assert_eq!(sig(format!("{:?}", to_scene(&layered, &b, Path::new(".")).unwrap().params)), "c4cc527d35ec0a1a");
+    }
+
+    #[test]
+    fn vary_changes_exactly_one_structural_gene() {
+        let mut b = blocks().pinned(1);
+        for k in 0..2 {
+            b.add("space", space_block(&format!("space_t{k}"), "")).unwrap();
+            b.add("comp", Block { id: format!("comp_t{k}"), params: vec![], wgsl: String::new(), toml: String::new() }).unwrap();
+        }
+        let mono = crate::regime::get("mono").unwrap();
+        let g = Genome { space: "space_t0".into(), regime: mono.name.into(), template: "stateless".into(), post: mono.post, ..genome() };
+        let mut kinds = std::collections::HashSet::new();
+        for r in 0..48u64 {
+            let v = vary(&g, &b, crate::types::hash(5, r));
+            assert_eq!(v, vary(&g, &b, crate::types::hash(5, r)), "deterministic");
+            let changed = [v.space != g.space, v.comp != g.comp, v.palette != g.palette];
+            assert_eq!(changed.iter().filter(|&&c| c).count(), 1, "{v:?}");
+            assert_eq!((&v.motion, &v.emitter, &v.colour, &v.blend, &v.regime, &v.template), (&g.motion, &g.emitter, &g.colour, &g.blend, &g.regime, &g.template));
+            if v.palette != g.palette {
+                assert_eq!(v.post.tint, crate::scenes::hex(&v.palette[2]).unwrap(), "mono tint follows the palette");
+            }
+            kinds.insert(changed.iter().position(|&c| c).unwrap());
+        }
+        assert_eq!(kinds.len(), 3, "fold, comp and palette changes all occur");
+    }
+
+    fn comp_block(id: &str, wgsl: &str) -> Block {
+        Block { id: id.into(), params: vec![], wgsl: wgsl.into(), toml: String::new() }
+    }
+
+    #[test]
+    fn recipes_comp_and_dual_slots() {
+        let mut b = blocks().pinned(1);
+        b.add("space", space_block("space_test", "fn space(p: vec2<f32>) -> vec2<f32> { return p; }")).unwrap();
+        b.add("comp", comp_block("comp_test", "fn comp(uv: vec2<f32>) -> vec3<f32> { return prev(uv.yx); }")).unwrap();
+        let base = Genome { regime: "calm".into(), space: "space_test".into(), ..genome() };
+        let st = wgsl(&Genome { template: "stateless".into(), ..base.clone() }, &b).unwrap();
+        assert!(st.contains("fn space") && !st.contains("prev(motion("), "stateless draws no feedback");
+        let eb = b.emitter.iter().find(|x| x.id != base.emitter && !x.params.is_empty()).unwrap();
+        let dual = Genome { template: "dual".into(), emitter_b: eb.id.clone(), ..base.clone() };
+        let src = wgsl(&dual, &b).unwrap();
+        assert!(src.contains("fn emit_b(") && src.contains("fn EP2(") && src.contains("emit_b(p)"));
+        let sc = to_scene(&dual, &b, Path::new(".")).unwrap();
+        assert_eq!(sc.params.len(), 16);
+        assert_eq!((sc.params[8].min, sc.params[8].max), (eb.params[0].min, eb.params[0].max), "emitter B in slots 8..10");
+        assert!(to_scene(&Genome { backdrop: "back_sky".into(), ..dual.clone() }, &b, Path::new(".")).is_err(), "dual has no layer slots");
+        assert_eq!(dress(&dual, &b, 3, 1, "HI"), dual, "dual looks are never dressed");
+        // Comp: a layer pass of its own (none without comp or layers), reframing the feedback only.
+        assert!(layers_wgsl(&base, &b).unwrap().is_none());
+        let l = layers_wgsl(&Genome { comp: "comp_test".into(), ..base.clone() }, &b).unwrap().unwrap();
+        assert!(l.contains("comp(uv) * 1.0") && l.contains("prev(uv.yx)"));
+        assert_eq!(wgsl(&base, &b).unwrap(), wgsl(&Genome { comp: "comp_test".into(), ..base.clone() }, &b).unwrap(), "comp never touches the feedback");
+    }
+
+    #[test]
+    fn random_v2_picks_recipes_and_comps() {
+        let mut b = blocks().pinned(1);
+        for k in 0..2 {
+            b.add("comp", comp_block(&format!("comp_t{k}"), "")).unwrap();
+        }
+        let reg = &crate::regime::REGIMES[0];
+        let gs: Vec<Genome> = (0..96).map(|r| random_v2(&b, crate::types::hash(11, r), reg, "")).collect();
+        let distinct = |f: &dyn Fn(&Genome) -> String| gs.iter().map(f).collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(distinct(&|g| g.template.clone()), 3, "feedback + stateless + dual");
+        assert_eq!(distinct(&|g| g.comp.clone()), 3, "none + 2 comps");
+        assert!(gs.iter().all(|g| (g.template == "dual") == !g.emitter_b.is_empty() && g.emitter_b != g.emitter));
+        // Mutation keeps a dual look's emitters distinct.
+        for d in gs.iter().filter(|g| g.template == "dual") {
+            assert!((0..64).all(|r| { let m = mutate_v2(d, &b, crate::types::hash(5, r)); m.emitter != m.emitter_b }));
+        }
+    }
+
+    /// The library as BLOCK_TAGS describes it (empty sources): the picking logic without the files.
+    fn tagged_library() -> Blocks {
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![comp_block("colour_x", "")], backdrop: vec![], overlay: vec![], space: vec![], comp: vec![], palettes: vec![genome().palette] };
+        for (id, _, _) in BLOCK_TAGS {
+            let kind = match id.split('_').next().unwrap() {
+                "emit" => "emitter",
+                k => k,
+            };
+            b.add(kind, comp_block(id, "")).unwrap();
+        }
+        b
+    }
+
+    /// The point of grammars: over many takes few looks are centred, spinning or zooming, every grammar
+    /// appears, and only radial looks ever use a centred, spinning, tunnel or 3D block (depth: 3D, never centred).
+    #[test]
+    fn takes_vary_their_visual_grammar() {
+        let b = tagged_library();
+        let looks = |id: &str| BLOCK_TAGS.iter().find(|t| t.0 == id).map_or("", |t| t.2);
+        let reg = &crate::regime::REGIMES[0];
+        let n = 4000u64;
+        let (mut centred, mut spin, mut zoom, mut plain) = (0u64, 0u64, 0u64, 0u64);
+        let mut seen = std::collections::HashSet::new();
+        for s in 0..n {
+            let r = crate::types::hash(21, s);
+            // As evolve::best_v2 draws it.
+            let grammar = grammar_for(r);
+            let g = random_v2(&b, r, reg, grammar);
+            assert_eq!(g.grammar, grammar);
+            seen.insert(grammar);
+            let mut ids = vec![&g.emitter, &g.emitter_b, &g.space, &g.comp];
+            if g.template != "stateless" {
+                ids.push(&g.motion);
+            }
+            let f: String = ids.iter().map(|id| looks(id)).collect();
+            // Depth is 3D on purpose (its camera may spin or fly a tunnel), but never centred symmetry.
+            match grammar {
+                "radial" => {}
+                "depth" => assert!(!f.contains('C'), "{grammar}: {g:?}"),
+                _ => assert!(!f.contains(['R', 'T', 'C', 'D']), "{grammar}: {g:?}"),
+            }
+            centred += f.contains('C') as u64;
+            spin += f.contains('R') as u64;
+            zoom += f.contains('Z') as u64;
+            plain += !f.contains(['R', 'Z', 'T', 'C', 'D']) as u64;
+        }
+        let pct = |k: u64| 100 * k / n;
+        // Before grammars (sim.py): centred 91%, spin 76%, zoom 68%, none of them 3%. Depth (1/6 of takes) is
+        // 3D on purpose, so plain sits near 64%.
+        assert!(pct(centred) <= 20 && pct(spin) <= 20 && pct(zoom) <= 25 && pct(plain) >= 60, "centred {}% spin {}% zoom {}% plain {}%", pct(centred), pct(spin), pct(zoom), pct(plain));
+        assert_eq!(seen.len(), GRAMMARS.len());
+        // Each non-radial grammar has enough to vary: at least two motions and three emitters.
+        for gr in &GRAMMARS[1..] {
+            let p = b.grammar_pool(gr);
+            assert!(p.motion.len() >= 2 && p.emitter.len() >= 3, "{gr}");
+        }
+    }
+
+    /// Every block a grammar can use is tagged and loads; tags name real grammars.
+    #[test]
+    fn block_tags_cover_the_v2_library() {
+        let b = blocks().pinned(2);
+        let lib: Vec<&Block> = [&b.motion, &b.emitter, &b.space, &b.comp].into_iter().flatten().collect();
+        for x in &lib {
+            assert!(BLOCK_TAGS.iter().any(|t| t.0 == x.id), "{} has no BLOCK_TAGS entry", x.id);
+        }
+        for (id, gs, _) in BLOCK_TAGS {
+            assert!(gs.split(' ').all(|g| GRAMMARS.contains(&g)), "{id}: {gs}");
+            assert!(lib.iter().any(|x| x.id == *id), "{id} is not in the engine-2 library");
+        }
+    }
+
+    #[test]
+    fn vary_stays_in_the_grammar_and_drops_folds() {
+        let b = tagged_library();
+        let g = Genome { space: "space_tile".into(), grammar: "grid".into(), regime: "calm".into(), ..random(&b.grammar_pool("grid"), 3) };
+        let mut dropped = 0;
+        for r in 0..64u64 {
+            let v = vary(&g, &b, crate::types::hash(8, r));
+            let p = b.grammar_pool("grid");
+            assert!(v.space.is_empty() || p.space.iter().any(|x| x.id == v.space), "{}", v.space);
+            assert!(v.comp.is_empty() || p.comp.iter().any(|x| x.id == v.comp), "{}", v.comp);
+            dropped += v.space.is_empty() as u32;
+        }
+        assert!(dropped >= 4, "a fold is dropped about a sixth of the time: {dropped}");
+        // A flow look has no folds: a fold change becomes a palette change, never a no-op.
+        let f = Genome { grammar: "flow".into(), space: String::new(), ..g.clone() };
+        assert!((0..32u64).all(|r| vary(&f, &b, crate::types::hash(9, r)) != f));
     }
 }

@@ -7,8 +7,7 @@ Run everything from the repo root in PowerShell. Build first: `cargo build --rel
 
 Settings stored by the old Anthropic/Bedrock setup no longer load. Run setup again.
 
-- [ ] `target
-eleaseisualiser.exe --setup-ai`. Enter the base URL, key and a model that supports tool calling (e.g. `https://api.openai.com/v1` + `gpt-5-mini`, or `http://localhost:11434/v1` + empty key + `qwen3`). Expect `works.` and `Saved.`
+- [ ] `target\release\visualiser.exe --setup-ai`. Enter the base URL, key and a model that supports tool calling (e.g. `https://api.openai.com/v1` + `gpt-5-mini`, or `http://localhost:11434/v1` + empty key + `qwen3`). Expect `works.` and `Saved.`
 - [ ] If it fails, note the exact error.
 - [ ] Alternative without setup: `$env:OPENAI_API_KEY="..."; $env:VISUALISER_AI_MODEL="..."` (plus `$env:OPENAI_BASE_URL="..."` for a non-OpenAI service)
 
@@ -81,11 +80,37 @@ Build first: `cargo build --release`. Copy `dnb8.wav` from `C:\Prathamesh\Ableto
   - Each seed is structurally different: another fold, mood or blend, not just another colour.
   - Drop anticipation: the picture darkens before the drop, then explodes on it.
   - No flashes faster than once per bar.
-- [ ] Engine 1 is byte-identical to `main`. Build `main` in a separate git worktree (`git worktree add ..\rv-main main`, then `cargo build --release` there). Give each tree its own copy of the wav in its own folder, so the two projects don't share a data folder.
+- [ ] Engine 1 is byte-identical to `main`. Build `main` in a separate git worktree (`git worktree add ..\rv-main main`, then `cargo build --release` there). Give each tree its own copy of the wav in its own folder, so the two projects don't share a data folder. Project data is keyed by the wav's absolute path (`%LOCALAPPDATA%\Visualiser\projects\<stem>-<hash>`), so each tree needs its own wav copy. For `--replan` runs use a scratch copy, not your real project wav.
   **Caveat:** libx264 multithreaded encoding is not repeatable run to run. In BOTH trees, temporarily add `-threads 1` to the x264 args in `src\render\mod.rs` (~line 167), rebuild, then revert it afterwards.
-  - [ ] Run `visualiser <wav> --replan --preview 1:00 --quality draft` in each tree, adding `--engine 1` on the branch run only (engine 2 is the branch default; `main` has no such flag), then `ffmpeg -i <preview>.mp4 -f framemd5 -an <main|branch>.md5`. The two `.md5` files must be equal.
+  - [ ] Run `visualiser <wav> --replan --preview 1:00 --quality draft --seed 1` in each tree (an explicit seed: a new project otherwise gets a random one), adding `--engine 1` in BOTH trees (`main` now defaults new projects to engine 2 too), then `ffmpeg -i <preview>.mp4 -f framemd5 -an <main|branch>.md5`. The two `.md5` files must be equal.
   - [ ] Repeat with `--layers` added. On the `main` run, move the 6 untracked `scenes\blocks\*runner*` / `*trippy*` files aside first (main loads them, the branch pins them out) and put them back afterwards.
   - [ ] Revert the `-threads 1` change in both trees.
+
+## 10. Engine 2 shows (phase 2)
+
+Build first: `cargo build --release`. Use a scratch copy of `dnb8.wav` in `testdata\`.
+
+- [ ] Smoke: open the project's `analysis.json` and note the first drop time `D`. For N = 1, 2, 3, 4 run `target\release\visualiser testdata\dnb8.wav --engine 2 --generated 1 --replan --preview <D-8s> --quality draft --seed N` and **watch** each preview. Look for:
+  - The drop goes black and a new look rebuilds.
+  - Transitions are styled (wipe, iris, melt or tiles, not only crossfades).
+  - At least one phrase variant inside the 30 s: a fold, framing or palette change.
+  - No flashes faster than once per bar.
+- [ ] Grep the four `plan.json` files for `"template"` and `"comp"`. Try seeds 5-12 until `comp_slitscan`, `comp_echo`, `stateless` and `dual` have each appeared, then watch them: slit-scan rows lag in time, the echo leaves ghost trails.
+- [ ] Saved plan is unchanged by the branch. Build the base commit in a worktree (`git worktree add ..\rv-base 231afa2`, `cargo build --release`), with `-threads 1` added to the x264 args in `src\render\mod.rs` in both trees (see section 9; revert afterwards). Run the base with `--engine 2 --replan --preview 1:00 --quality draft` on its own wav copy. Copy its `plan.json` into the branch project's folder (the branch wav copy's `projects\<stem>-<hash>`), then run the branch with no `--replan`. It must print "using saved plan". `ffmpeg -i <preview>.mp4 -f framemd5 -an <x>.md5` for both: the files must be equal.
+- [ ] Planning time: time the `--replan` run on base and on the branch (same wav, `--engine 2 --generated 1`). The branch plans one more judged look per drop, so it is a bit slower. Flag it if it takes more than 2x the base.
+
+## 11. Engine 2 grammars
+
+Build first: `cargo build --release`. Use a scratch copy of `dnb8.wav` in `testdata\`. `BASE` is commit `7fdc5cc` (before grammars).
+
+- [ ] Smoke, one per grammar (radial, flow, grid, scroll, still): run `target\release\visualiser testdata\dnb8.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed N` for N = 1, 2, 3, ... (or add `--plan-only` to find seeds quickly). After each run, grep the project's `plan.json` for `"grammar"` (under each segment's `genome`). Stop when all five have a render (cap 25 seeds), then **watch** them. Look for:
+  - flow, grid, scroll and still do not read as tunnels, rotation or a centred fold.
+  - still holds its camera.
+  - Every segment has a `genome` (no grammar fell back to a hand-made scene).
+- [ ] `motion_sink` seams: in a look that uses it (grep `plan.json` for `motion_sink`), check for visible seams or tearing along the edges as it sinks.
+- [ ] Engine 1 is byte-identical to `main`: use the method in section 9 (worktree, `-threads 1` in both trees, own wav copy each) with `target\release\visualiser <wav> --engine 1 --replan --preview 1:00 --quality draft --seed 1` in both, then compare the `ffmpeg -i <preview>.mp4 -f framemd5 -an <x>.md5` files. They must be equal.
+- [ ] Saved engine-2 plan is unchanged: build `BASE` in a worktree (`git worktree add ..\rv-base 7fdc5cc`) with the same `-threads 1` patch. Run it with `--engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed 3` on its own wav copy, copy its `plan.json` into the branch project's folder, then run the branch with the same args and no `--replan`. It must print "using saved plan", and the framemd5 files must be equal. Repeat with `--seed 5`. Revert `-threads 1` and remove the worktrees afterwards.
+- [ ] Planning time: time the `--replan` run on base and on the branch (same wav, `--engine 2 --generated 1`). Flag it if the branch takes more than 2x the base.
 
 ## Known gaps (not bugs, decided)
 

@@ -57,11 +57,13 @@ Run `visualiser.exe` with no arguments, by double-clicking it or from the Start 
   - **Quit** (or `Esc`).
 - Choosing **Full video** or **Quick 30-second test file** directly renders straight away, with no menu.
 
-- **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
-- **Motion graphics** (generated styles only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only.
-- **Who designs the visuals** is asked only when an AI service is set up. "Core engine only" is free and works offline. "Let AI design it" asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. Without an AI service it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
-- **Visuals?** (generated styles, core engine only): Variety (recommended, `--engine 2`: new folds, moods, fractals, glitch) or Classic (`--engine 1`: the original looks). See [Engine 2](#engine-2---engine-2).
-- **Your own pictures** is asked after motion graphics or an AI description: pick PNG/JPG files (`--image`, up to 8). Full-frame photos become backdrops, transparent PNGs float as cut-outs.
+- **What kind of visuals?** comes first:
+  - **Variety** (recommended, `--engine 2`): a new world on each drop, looks that develop with the music, styled transitions. See [Engine 2](#engine-2---engine-2) and [Shows](#shows).
+  - **Classic** (`--engine 1`): the original looks.
+  - **AI-designed** (only when an AI service is set up): asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. See [AI features](#ai-features---setup-ai---vibe---forget-ai). Without an AI service the wizard prints a tip to run `visualiser --setup-ai`.
+- **Scenes?**: freshly generated (`--generated 1`), a mix of hand-made and freshly generated (`--generated 0.5`), or hand-made only (`--generated 0`, not offered for AI-designed). "(recommended)" is on freshly generated for Variety and on the mix for Classic and AI. See [Generated scenes](#generated-scenes---generated---keep).
+- **Motion graphics** (generated scenes only): Yes adds scenery behind the visuals (sky, 3D sea world) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only. With Classic and AI in Auto mode it also adds a new shot at each drop; Variety cuts to a new world on every drop either way. Single mode never cuts.
+- **Your own pictures** are not asked in guided mode (they rarely look good yet). Use `--image` on the command line.
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
 - `Esc` quits at any question.
@@ -167,7 +169,7 @@ Auto mode detects a track change when the **key or tempo** changes. Breakdowns a
 
 | Option | Values | Default | Description |
 |---|---|---|---|
-| `--seed <N>` | integer | `1` | Fixes every random choice. Same file + same settings + same seed = the same video. A new seed gives a different take. Different files get different takes even with the same seed. |
+| `--seed <N>` | integer | saved plan's, else random | Fixes every random choice. Same file + same settings + same seed = the same video. Unset: a plain re-run (and `--replan`/`--reroll`) keeps the saved plan's seed; a new project gets a fresh random seed, printed as `seed N (--seed N makes this take again)`. The guided mode starts every session and every "Try another take" on a fresh random seed. |
 | `--reroll <INDEX>` | segment index (0-based, as in `plan.json`) | none | Gives one segment a new take: scene, palette and variations. Every other segment stays the same. Repeat it for several segments: `--reroll 2 --reroll 5`. Re-rolling the same segment again gives yet another take. |
 
 To keep a segment you like, set `"locked": true` on it in the plan file. See [Editing the plan file](#editing-the-plan-file).
@@ -502,7 +504,7 @@ Besides the hand-made scenes, the program can build new ones from a library of p
 
 | Option | Values | Default | Description |
 |---|---|---|---|
-| `--generated <SHARE>` | `0` to `1` | the saved plan's value, else `0.5` | Share of the auto-picked segments that get a generated scene. `0` = only hand-made scenes, `1` = all generated. |
+| `--generated <SHARE>` | `0` to `1` | the saved plan's value, else `1` for new engine-2 projects (`0.5` for engine 1) | Share of the auto-picked segments that get a generated scene. `0` = only hand-made scenes, `1` = all generated. Saved projects keep their own value. |
 | `--keep <N>` | segment index (0-based, as in `plan.json`) | none | Copies segment N's generated scene into `scenes\` as a normal scene. Doesn't render. |
 
 - Each generated scene is chosen by scoring candidates on **that segment's own music**. The judge renders a few seconds of each candidate small and rejects the dull, the flooded (washed to white), the noisy (TV static) and the deaf (not reacting to the kick). It catches bad ones, not great ones, so you pick favourites with `--keep`.
@@ -559,7 +561,7 @@ What it adds:
 - **Space folds:** the plane is folded (mirrors, kaleidoscopes, hyperbolic folds) before the motion and the emitter see it, so trails and shapes inherit the symmetry.
 - **Blend modes:** how the new emission is laid onto the fading previous frame.
 - **Six moods:** `calm`, `dark`, `mono`, `sparse`, `glitch` and `maximal`. A mood sets how fast trails fade, how hard the emitter is driven and how the finish pass looks. The judge uses each mood's own brightness and motion limits, so a `dark` look isn't rejected for being dark.
-- **19 new blocks** in `sceneslocks\`: space folds, feedback operators and emitters. See [Scene blocks](#scene-blocks).
+- **19 new blocks** in `scenes\blocks\`: space folds, feedback operators and emitters. See [Scene blocks](#scene-blocks).
 - **Onset hits:** snares and kicks drive the visuals directly (a snare envelope, a sharp kick punch, time since the last snare), not only the smoothed kick.
 - **Drop build-ups:** the picture darkens half a bar before a drop and explodes on it.
 - **Glitch looks:** strobe, RGB split, tear and invert, on moods `glitch` and `maximal` only. They are gated on downbeats and snares.
@@ -569,15 +571,47 @@ Notes:
 - `--generated` still sets how many segments are generated. Use `--generated 1` to make every segment engine 2.
 - **New projects use engine 2.** Projects with a saved plan keep their engine (plans saved before engine 2 existed are engine 1). `--engine 1` forces the classic looks.
 - The engine is saved in the plan, so a plain re-run (and a render from the saved plan) keeps using it. Changing `--engine` makes a new plan.
-- The guided mode asks **Visuals?** (Variety = engine 2, Classic = engine 1) when the core engine designs the visuals.
+- The guided mode's first question, **What kind of visuals?**, picks the engine (Variety = engine 2, Classic = engine 1).
 - **Engine 1 is unchanged.** `--engine 1` output is the same as before. New blocks, AI blocks and `--keep` scenes never alter engine-1 seeds.
 - **Re-analysis:** after upgrading, each project is analysed once again (the analysis format gained snare onsets). This applies to all runs, not just engine 2.
 - **Flash limit:** strobe and invert flashes are limited to at most one per bar, under the 3 Hz limit in WCAG.
 - `--vibe` keeps engine-1 looks.
 
+### Shows
+
+Engine 2 also plans a whole show, not only single looks:
+
+- **Drop resets:** at a drop the picture goes black, then a new look rebuilds from nothing. Single mode (`--mode single`) keeps one look for the whole track: no drop resets, no new shots (not even with `--layers` or an AI storyboard) and no phrase variants. It evolves through its own variations only.
+- **Phrase variants:** every 16 or 32 bars a look develops into a variant (a changed fold, framing or palette). Variants are not chapters. They only vary over the frozen engine-2 block library, so new block files on disk don't change seeds, and they only apply to engine-2 looks. `--reroll N` of a variant re-rolls its parent segment. Locking a generated segment, or any of its variants, locks the whole look including its variants.
+- **Transition styles:** crossfade, luma wipe, iris zoom-through, melt or tiles. The seed picks.
+- **Comp framings:** mirror, kaleido, slit-scan and time echo, applied to the display only (the feedback loop doesn't see them). Slit-scan rows lag in time; the echo leaves ghost trails.
+- **Recipes:** `stateless` (no feedback buffer, the picture is drawn fresh each frame) and `dual` (two emitters at once).
+- **Default share:** `--generated` defaults to `1` for new engine-2 projects (`0.5` for engine 1). Saved projects keep theirs.
+- **Memory:** a history ring of past frames feeds slit-scan and echo, about 133 MB at 1080p and 236 MB at 1440p. It is only allocated when a look uses one, and is cleared on a reset cut and on preview seek.
+- **Planning takes a bit longer:** one judged look per drop.
+
 ```
 visualiser.exe song.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed 3
 ```
+
+### Grammars
+
+Each engine-2 look first draws a visual grammar, then picks its blocks from that grammar only. Five grammars, equal odds, drawn from the segment seed:
+
+- **radial:** the full classic engine-2 library: tunnels, kaleidoscopes, 3D, zoom about the centre.
+- **flow:** drifting, shearing fields with no centre.
+- **grid:** tiled, pixelated or banded space with stepped or halftone emitters.
+- **scroll:** the picture slides past (scan lines, waves, scatter).
+- **still:** a held camera. Things appear and fade in place.
+
+The four non-radial grammars avoid centred, spinning, tunnel and 3D blocks and strong zoom about the centre. Measured over many seeds, centred looks fell from about 91% to 13%, rotating looks from 76% to 13% and zooming looks from 68% to 17%. Looks with none of rotation, zoom, tunnel, centred or 3D went from about 3% to 78%.
+
+- **Folds are rarer:** a space fold is used in 1 look in 3 (it was 5 in 6).
+- **Phrase variants stay in the look's grammar** and often drop a fold or framing instead of adding one.
+- **The judge allows for it:** `still` looks get a quarter of the minimum-motion floor and `grid` looks half. A centredness measure steers the picker away from repeating centred looks.
+- **13 new blocks:** motions `drift`, `shear`, `sink`, `still`, `stutter`; spaces `tile`, `pixel`, `bands`; emitters `steps`, `scan`, `wave`, `scatter`, `halftone`.
+- **Seeds changed:** the same `--seed` gives a different engine-2 take than before this change. Saved plans still render identically, and engine 1 is unchanged.
+- The look's grammar is saved in `plan.json` (`genome.grammar`).
 
 ---
 

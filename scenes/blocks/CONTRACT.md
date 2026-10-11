@@ -60,3 +60,43 @@ both the motion and the emitter see it, so trails and shapes inherit its symmetr
 - `hyper_fold(q, k, w) -> vec4` (|q|<1): Mobius-drift by w, fold into the {p,q} Poincare tiling k (0..3); returns (q, inversions, mirror-circle r; centre (sqrt(1+r^2), 0)).
 - Motion blocks may tap `prev()` a few times (≤ 5) to react to the image (edges, brightness); get the pixel
   size from `resolution()`.
+
+## Engine 2: comp blocks, history, recipes
+**Comp blocks** (kind `comp`, ids `comp_<name>`, **no params**) reframe the finished feedback for display
+only, in the look's layer pass: `rgb = backdrop(p) + comp(uv) * feedback`, then the overlay. Nothing in this
+pass is fed back, so the simulation underneath keeps its own shape.
+- comp: `fn comp(uv: vec2<f32>) -> vec3<f32>`: the colour to show at `uv`. Read the feedback with `prev(uv)`
+  (in this pass `prev()` is the finished feedback; comp is the one layer kind that may call it) or the
+  display history with `hist(uv, k)`.
+- `hist(uv, k)`: the feedback `k` output frames ago (0..63, about 2 s at 30 fps), HDR. It is black until
+  the ring has filled. The engine keeps the ring only for looks whose comp block calls `hist(`.
+- No params: vary with `seed()` (fixed per segment) and the music helpers.
+
+**Recipes** (`Genome::template`): `""` is the feedback template above. Two others exist:
+- `"stateless"`: `col = colour(emit(space(p))) * drive`, with no `prev()`; the motion block is unused.
+  It suits dense and raymarched emitters.
+- `"dual"`: a second emitter (`Genome::emitter_b`, ≠ `emitter`). The brighter of the two wins each pixel.
+  The second is shown half a hue turn away and swells on snares.
+  - Its source is included with `fn emit(` renamed to `fn emit_b(` and `EP(` to `EP2(`, which reads params
+    `P(8..10)`. So emitters must define `emit` once, never call it themselves, and read params only
+    through `EP(`.
+  - Dual looks never get a backdrop or overlay, because they use those slots.
+
+## Engine 2: grammars
+Each generated look has a **grammar** (`Genome::grammar`: radial, flow, grid, scroll, still, depth) drawn before
+its blocks. It picks only from blocks tagged with that grammar in `BLOCK_TAGS` (`src/genome.rs`), so a new
+engine-2 motion, emitter, space or comp block needs an entry there (and in `V2_BLOCKS`), or no grammar uses it.
+- **radial**: the classic library: tunnels, folds, spins. Anything centred goes here only.
+- **flow**: advected fields with no centre and no spin. **grid**: tiles, mosaics, sequencers, blocky jumps.
+  **scroll**: the picture slides one way. **still**: the camera holds; motion is decay only (or kick jumps).
+- **depth**: one raymarched 3D emitter (tag `D`), crisp: `"stateless"` 3/4 of the time, else feedback for
+  light trails, never dual; motions are motion_still / motion_drift only, no space or comp folds. A depth
+  emitter raymarches inside `emit(p)` (p = centred coords → camera ray) and returns the usual
+  (intensity ≥ 0, roughly 0..1.5; hue 0..1), so any colour block works. Cap the steps
+  (`select(48, 96, quality() > 0.5)`) and the distance; prefix every helper with the block id (`emit_world_de`).
+  The camera may move (orbit, fly), but nothing centred-symmetric (no `C`).
+- Non-radial blocks: no time-driven rotation, no steady or strong zoom about the frame centre, nothing
+  centred. A few older blocks (motion_swirl's kick and drop zoom, motion_etch, motion_mosh) keep a tiny zoom about the
+  centre; new blocks must not zoom about the centre at all. A zoom must be inward (< 1), about an off-centre
+  point, and tagged `Z`.
+- Motions that slide the whole frame may wrap with `fract(uv)` instead of mirroring off the edge.

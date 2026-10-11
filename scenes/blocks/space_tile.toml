@@ -1,0 +1,7 @@
+kind = "space"
+description = "Tile: the plane repeats as a wallpaper of mirrored tiles, offset so none sits on the centre; trails repeat across the grid"
+[[param]]
+name = "tiles"      # tiles per frame height
+min = 2.0
+max = 4.0
+fixed = true

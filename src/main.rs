@@ -40,9 +40,10 @@ struct Cli {
     /// Output height: 720, 1080 or 1440. Default 1080 (720 for draft).
     #[arg(long)]
     resolution: Option<u32>,
-    /// Same file + settings + seed = same video.
-    #[arg(long, default_value_t = 1)]
-    seed: u64,
+    /// Same file + settings + seed = same video. Default: the saved plan's seed (so a plain re-run reuses it),
+    /// else a fresh random one: every new project is a new take.
+    #[arg(long)]
+    seed: Option<u64>,
     /// Re-roll one segment (index from the plan file); repeatable.
     #[arg(long)]
     reroll: Vec<usize>,
@@ -82,7 +83,7 @@ struct Cli {
     /// Scenes folder. Default: scenes/ next to the program, else ./scenes, else the source tree's scenes/.
     #[arg(long)]
     scenes: Option<PathBuf>,
-    /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated). Default: the saved plan's value, else 0.5.
+    /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated). Default: the saved plan's value, else 1 with engine 2 (0.5 with engine 1).
     #[arg(long)]
     generated: Option<f32>,
     /// Copy segment N's generated scene into scenes/ as a hand-made one (keep a look you love).
@@ -205,6 +206,14 @@ fn run(cli: Cli) -> Result<()> {
     // New projects get engine 2; a saved plan without `engine` reads as 1, so old projects keep their looks.
     let engine = cli.engine.or(previous.as_ref().map(|p| p.engine)).unwrap_or(2);
     let pool = cli.pool.or(previous.as_ref().map(|p| p.pool)).unwrap_or_default();
+    let seed = match cli.seed.or(previous.as_ref().map(|p| p.seed)) {
+        Some(s) => s,
+        None => {
+            let s = types::fresh_seed();
+            eprintln!("seed {s} (--seed {s} makes this take again)");
+            s
+        }
+    };
     // Older analyses (no snares) are redone once.
     let analysis = load_or_analyse(&audio, &data, cli.reanalyse)?;
 
@@ -230,8 +239,9 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
-    let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
+    // Unset = what the saved plan used (so a plain re-run reuses it), else all generated with engine 2 (its takes
+    // share no screen time with the hand-made scenes) and half with engine 1.
+    let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(if engine >= 2 { 1.0 } else { 0.5 });
     // A vibe or --layers only steers generated scenes, so they imply some.
     let generated = if (cli.vibe.is_some() || cli.layers) && generated == 0.0 { 1.0 } else { generated };
     // Absolute, so the saved plan still finds them from another working directory.
@@ -254,7 +264,7 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref(), engine, pool))
+        && previous.as_ref().is_some_and(|p| p.same_inputs(seed, mode, generated, cli.vibe.as_deref(), engine, pool))
         && previous.as_ref().is_some_and(|p| {
             p.layers == cli.layers && p.plates.starts_with(&user_plates) && p.plates[user_plates.len()..].iter().all(|q| q.starts_with(&ai_plates))
         });
@@ -332,7 +342,7 @@ fn run(cli: Cli) -> Result<()> {
                     return Some(g);
                 }
                 // The take's seed shifts the rotation, so new takes start from other looks.
-                let i = k.replace(k.get() + 1).wrapping_add(hash(cli.seed, 0x5EED) as usize) % seeds.len().max(1);
+                let i = k.replace(k.get() + 1).wrapping_add(hash(seed, 0x5EED) as usize) % seeds.len().max(1);
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
                 evolve::best(&mut judge.borrow_mut(), sub.as_ref().unwrap_or(blocks), &gen_dir, &analysis, start, end, r, &rotated, budget)
             };
@@ -345,21 +355,19 @@ fn run(cli: Cli) -> Result<()> {
                     _ => Some(g),
                 }
             };
-            // --layers: a morph into each build-up and a flash on each drop.
-            let shots: Vec<Shot> = if cli.layers {
-                analysis
-                    .drops
-                    .iter()
-                    .flat_map(|d| {
-                        [
-                            Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } },
-                            Shot { time: d.time, transition: Transition { kind: TransitionKind::Flash, duration: 0.0 } },
-                        ]
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            // Drops are hard cuts into a new shot: --layers flashes; engine 2 resets (black, then the new world
+            // rebuilds), with or without --layers. --layers also morphs into each build-up.
+            let drop_cut = Transition::drop_cut(looks);
+            let drop_shots = cli.layers || looks >= 2;
+            let shots: Vec<Shot> = analysis
+                .drops
+                .iter()
+                .flat_map(|d| {
+                    let build = cli.layers.then_some(Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } });
+                    let drop = drop_shots.then_some(Shot { time: d.time, transition: drop_cut });
+                    build.into_iter().chain(drop)
+                })
+                .collect();
             // A storyboard picks each shot's look as designed (no evolution): the AI is directing.
             // The shot nearest the segment start (the director snaps shots up to 2 bars and may drop some);
             // else the last one before it.
@@ -372,6 +380,8 @@ fn run(cli: Cli) -> Result<()> {
             };
             let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if story.is_empty() { &dressed } else { &storyboard };
             let shots = if story.is_empty() { shots } else { story.iter().map(|(s, _)| *s).collect() };
+            // Single mode is one look for the whole track: no new shots, whatever asked for them.
+            let shots = if mode == Mode::Single { Vec::new() } else { shots };
             // Only when engine 2 was asked for: it's the default, so the note would otherwise show on every vibe.
             if looks < engine && cli.engine.is_some() {
                 eprintln!("note: --vibe uses engine 1 looks");
@@ -381,7 +391,7 @@ fn run(cli: Cli) -> Result<()> {
                 scenes: &scenes,
                 mode,
                 markers: &markers,
-                seed: cli.seed,
+                seed,
                 previous: previous.as_ref(),
                 reroll: &cli.reroll,
                 force_scene: cli.scene.as_deref(),

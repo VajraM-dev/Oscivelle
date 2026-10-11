@@ -1,0 +1,14 @@
+kind = "emitter"
+description = "Scatter: sparks on a jittered grid; each kick re-rolls which light up and where, so the frame sparkles in fresh random spots every beat"
+[[param]]
+name = "density"    # cells per unit
+min = 3.0
+max = 9.0
+[[param]]
+name = "size"       # spark radius, centred units
+min = 0.01
+max = 0.04
+[[param]]
+name = "share"      # share of cells lit
+min = 0.2
+max = 0.5

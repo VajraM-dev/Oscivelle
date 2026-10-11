@@ -75,7 +75,8 @@ fn pick(scored: Vec<(f32, Genome)>, seed: u64) -> Option<Genome> {
 /// Engine 2, same budget as `best`. The verdict only gates (by the segment's seed-chosen regime), the
 /// mutation parents are picked by seed, not score, and the final pick spreads over look space: the seed
 /// picks an occupied cell (score::cell), then the candidate there farthest from `avoid` (the hand-made
-/// scenes and this plan's earlier picks). Returns the genome and its descriptor.
+/// scenes and this plan's earlier picks). The segment's grammar (genome::GRAMMARS) is drawn by seed, like its
+/// regime; candidates and mutations use only that grammar's blocks. Returns the genome and its descriptor.
 #[allow(clippy::too_many_arguments)]
 pub fn best_v2(
     judge: &mut Judge,
@@ -91,6 +92,8 @@ pub fn best_v2(
     use crate::{regime::REGIMES, score};
     let t0 = (start + 30.0).min((start + end) / 2.0);
     let regime = &REGIMES[(hash(seed, 0x4E61) % REGIMES.len() as u64) as usize];
+    // The look's visual grammar, drawn before any block: every candidate and mutation comes from its pool.
+    let grammar = genome::grammar_for(seed);
     // A look already seen yields None, so `pass` has no duplicates.
     let mut seen = std::collections::HashSet::new();
     let mut measure = |g: Genome| -> Option<(Genome, [f32; 6])> {
@@ -99,9 +102,10 @@ pub fn best_v2(
         }
         let sc = genome::write(&g, blocks, gen_dir).ok()?;
         let m = judge.measure(sc, a, t0, 4.0).ok()?;
-        score::passes(&m, &regime.th).then(|| (g, score::descriptor(&m)))
+        // Each recipe widens the regime's ranges its own way (regime::gate).
+        score::passes(&m, &crate::regime::gate(regime, &g.template, &g.grammar)).then(|| (g, score::descriptor(&m)))
     };
-    let fresh = |k: usize| genome::random_v2(blocks, hash(seed, k as u64), regime);
+    let fresh = |k: usize| genome::random_v2(blocks, hash(seed, k as u64), regime, grammar);
     let first = (budget * 2 / 5).max(2);
     let mut pass: Vec<(Genome, [f32; 6])> = (0..first).map(fresh).filter_map(&mut measure).collect();
     let parents: Vec<Genome> = (0..2.min(pass.len())).map(|j| pass[(hash(seed, 0xA0 + j as u64) % pass.len() as u64) as usize].0.clone()).collect();
@@ -144,7 +148,7 @@ mod tests {
         let g = |m: &str| Genome { motion: m.into(), ..Default::default() };
         let dark = [0.1, 0.1, 0.5, 0.1, 0.5, 0.5];
         let bright = [0.9, 0.9, 0.5, 0.9, 0.5, 0.5];
-        let bright2 = [0.95, 0.95, 0.9, 0.95, 0.9, 0.9];
+        let bright2 = [0.95, 0.95, 0.55, 0.95, 0.9, 0.9];
         let pool = vec![(g("d"), dark), (g("b"), bright), (g("b2"), bright2)];
         let picks: std::collections::HashSet<String> = (0..32).map(|s| pick_v2(pool.clone(), s, &[]).unwrap().0.motion).collect();
         assert!(picks.contains("d") && picks.len() >= 2, "{picks:?}");

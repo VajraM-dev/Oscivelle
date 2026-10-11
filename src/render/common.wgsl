@@ -23,3 +23,9 @@ fn pcg(v: u32) -> u32 {
     return (w >> 22u) ^ w;
 }
 
+// Integer hash of the exact float bits: no precision seams at large coordinates
+// (a float fract/sin hash shards fbm once coords grow).
+fn hash21(p: vec2<f32>) -> f32 {
+    let b = bitcast<vec2<u32>>(p + 0.0);
+    return f32(pcg(b.x ^ pcg(b.y)) >> 8u) / 16777216.0;
+}

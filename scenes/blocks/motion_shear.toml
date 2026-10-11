@@ -1,0 +1,14 @@
+kind = "motion"
+description = "Shear: rows (or columns) slide sideways along a wave that travels down the frame, so trails ripple into ribbons; kicks swell the wave"
+[[param]]
+name = "waves"      # wave cycles over the frame
+min = 1.0
+max = 4.0
+[[param]]
+name = "amount"     # px per step
+min = 0.8
+max = 3.0
+[[param]]
+name = "persistence"
+min = 0.9
+max = 0.97

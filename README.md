@@ -18,6 +18,10 @@ Turns a long audio file (DJ mix or production) into an MP4 with music-aware, Mil
 
 **Engine 2** (default for new projects) makes every `--seed` a structurally different piece (space folds, blend modes, six moods, onset hits, drop build-ups, glitch looks), with no AI. Saved projects keep their engine; `--engine 1` gives the classic looks. Details: [docs/USAGE.md](docs/USAGE.md#engine-2---engine-2).
 
+**Shows** (engine 2): the picture goes black at each drop and rebuilds, looks develop every 16/32 bars, transitions are styled (luma wipe, iris, melt, tiles) and some looks use slit-scan or time echo. Details: [docs/USAGE.md](docs/USAGE.md#shows).
+
+**Grammars** (engine 2): each look draws a visual grammar (radial, flow, grid, scroll or still), so most looks no longer centre, spin or tunnel. Details: [docs/USAGE.md](docs/USAGE.md#grammars).
+
 **AI vibe (optional, bring your own OpenAI-compatible API: OpenAI, OpenRouter, Ollama, ...):** `visualiser --setup-ai`, then `--vibe "dark and liquid"` steers the generated scenes. Never required, never fails a render. Details: [docs/AI.md](docs/AI.md).
 
 **Dev:** `--author "<description>"` has the AI write a new hand-editable scene into `scenes/`; audition it with `--dev --scene <id>`.

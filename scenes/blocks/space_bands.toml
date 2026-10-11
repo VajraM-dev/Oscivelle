@@ -1,0 +1,11 @@
+kind = "space"
+description = "Bands: the plane is cut into strips (horizontal or vertical) that each slide by their own amount, re-rolled every kick; every other strip is mirrored"
+[[param]]
+name = "bands"      # strips per unit
+min = 2.0
+max = 8.0
+fixed = true
+[[param]]
+name = "shift"      # largest slide, centred units
+min = 0.1
+max = 0.6

@@ -67,6 +67,31 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     if req.scenes.is_empty() {
         bail!("no scenes");
     }
+    // A phrase variant is part of the segment it varies: locking one locks that segment (which then keeps
+    // its saved variants, see the locked branch below).
+    let normal;
+    let previous = match req.previous {
+        Some(p) if p.segments.iter().any(|s| s.variant && s.locked) => {
+            let mut q = p.clone();
+            let mut parent = 0;
+            for i in 0..q.segments.len() {
+                if !q.segments[i].variant {
+                    parent = i;
+                } else if q.segments[i].locked {
+                    q.segments[i].locked = false;
+                    q.segments[parent].locked = true;
+                }
+            }
+            normal = q;
+            Some(&normal)
+        }
+        p => p,
+    };
+    // --reroll counts the saved plan's segments; a phrase variant belongs to the segment it varies.
+    let reroll: Vec<usize> = match previous {
+        Some(p) => req.reroll.iter().map(|&i| i.saturating_sub(p.segments.iter().take(i + 1).filter(|s| s.variant).count())).collect(),
+        None => req.reroll.to_vec(),
+    };
     // Auto picks come from the shipped scenes only (unless --pool all); a library without them (tests) uses all.
     let builtin: Vec<Scene> = req.scenes.iter().filter(|s| crate::scenes::is_builtin(&s.id)).cloned().collect();
     let pool: &[Scene] = if builtin.is_empty() || req.pool == Pool::All { req.scenes } else { &builtin };
@@ -80,10 +105,9 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         other => other.clone(),
     };
 
-    // A change landing near a drop flashes instead of its usual transition.
-    let flash_near_drop = |t: f64, other: Transition| {
-        if near_drop(t) { Transition { kind: TransitionKind::Flash, duration: 0.0 } } else { other }
-    };
+    // A change landing near a drop flashes (engine 2: clears the feedback) instead of its usual transition.
+    let hit = Transition::drop_cut(req.engine);
+    let flash_near_drop = |t: f64, other: Transition| if near_drop(t) { hit } else { other };
     let change_transition = |c: &TrackChange| match c.kind {
         ChangeKind::Cut => flash_near_drop(c.time, CUT),
         ChangeKind::Blend => Transition { kind: TransitionKind::Morph, duration: c.blend_len.clamp(2.0, 16.0) },
@@ -127,10 +151,11 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     }
 
     // Shot changes inside the music (storyboard / --layers). Markers mode keeps the user's own cuts.
-    // Flashes (drops) are placed first, so a morph too close to one is the shot that gets dropped.
+    // Hard cuts (flash, reset) are placed first, so a morph too close to one is the shot that gets dropped.
+    // Engine 1 keeps its frozen order (only Flash first; its Cut shots stay in the second group).
     if req.mode != Mode::Markers {
-        let is_flash = |s: &&Shot| s.transition.kind == TransitionKind::Flash;
-        for s in req.shots.iter().filter(is_flash).chain(req.shots.iter().filter(|s| !is_flash(s))) {
+        let is_hard = |s: &&Shot| if req.engine >= 2 { !s.transition.kind.is_morph() } else { s.transition.kind == TransitionKind::Flash };
+        for s in req.shots.iter().filter(is_hard).chain(req.shots.iter().filter(|s| !is_hard(s))) {
             let t = snap(a, s.time, bar);
             if t < 8.0 * bar || a.duration - t < 8.0 * bar || bounds.iter().any(|b| (b.start - t).abs() < 8.0 * bar) {
                 continue;
@@ -142,7 +167,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
 
     // Locked segments must survive small boundary shifts (re-analysis, marker edits): pull the nearest
     // boundary within 2 bars onto each locked start, or insert one there.
-    if let Some(p) = req.previous {
+    if let Some(p) = previous {
         let locks: Vec<f64> = p
             .segments
             .iter()
@@ -187,9 +212,9 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     // (only when the plan seed and mode are unchanged) so earlier re-rolls stick.
     let prev: Vec<Option<&Segment>> = bounds
         .iter()
-        .map(|b| req.previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
+        .map(|b| previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
         .collect();
-    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine, req.pool));
+    let same_plan = previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine, req.pool));
     let locked = |i: usize| prev[i].filter(|s| s.locked);
     let kept = |i: usize| prev[i].filter(|_| same_plan);
     // Source name mixed in so different files get different takes at the same seed.
@@ -233,10 +258,17 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                 Some(f) => (req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed, req.engine)), None),
                 None => (s.mods.clone(), s.genome.clone()),
             };
-            segments.push(Segment { end: ends[i], scene, mods, genome, ..s.clone() });
+            // Its saved phrase variants follow it (unless a scene is forced), clipped to its new end.
+            let vars: Vec<Segment> = match (previous, req.force_scene) {
+                (Some(p), None) => p.segments.iter().skip_while(|x| !std::ptr::eq(*x, s)).skip(1).take_while(|x| x.variant && x.start < ends[i]).cloned().collect(),
+                _ => Vec::new(),
+            };
+            segments.push(Segment { end: vars.first().map_or(ends[i], |v| v.start), scene, mods, genome, ..s.clone() });
+            let k = vars.len();
+            segments.extend(vars.into_iter().enumerate().map(|(j, v)| Segment { end: if j + 1 == k { ends[i] } else { v.end }, ..v }));
             continue;
         }
-        let rerolls = req.reroll.iter().filter(|&&r| r == i).count() as u64;
+        let rerolls = reroll.iter().filter(|&&r| r == i).count() as u64;
         // Unlocked segments regenerate from their kept seed (base_seed), so earlier re-rolls stick
         // while titles/transitions follow the current markers and analysis.
         let seed = if rerolls > 0 { hash(base_seed(i), 0xDEAD + rerolls) } else { base_seed(i) };
@@ -287,13 +319,24 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             transition_in: if i == 0 { CUT } else { b.transition },
             mods: mods(sc, seed, req.engine),
             genome,
+            variant: false,
         });
+    }
+    // Engine 2: generated segments develop at their phrases, and morphs get a seed-chosen style.
+    if req.engine >= 2 {
+        // Single mode keeps one look: it evolves through its variations, never through new looks.
+        if let Some(blocks) = req.blocks.filter(|_| req.mode != Mode::Single) {
+            segments = phrase_variants(a, segments, blocks, req.gen_dir, req.engine)?;
+        }
+        for s in segments.iter_mut().filter(|s| !s.locked && s.transition_in.kind == TransitionKind::Morph) {
+            s.transition_in.kind = MORPHS[(hash(s.seed, 9) % MORPHS.len() as u64) as usize];
+        }
     }
     // A morph window (centred on the start) may not exceed either neighbouring segment, so windows never overlap.
     for i in 1..segments.len() {
         let span = (segments[i - 1].end - segments[i - 1].start).min(segments[i].end - segments[i].start);
         let t = &mut segments[i].transition_in;
-        if t.kind == TransitionKind::Morph {
+        if t.kind.is_morph() {
             t.duration = t.duration.min(span);
         }
     }
@@ -309,6 +352,65 @@ fn pick(scenes: &[Scene], soft: &[&str], hard: &[&str], r: u64) -> String {
         }
     }
     unreachable!("scenes is non-empty")
+}
+
+/// How a phrase variant is entered: a plain cut or a styled morph one bar long.
+const PHRASE_CUTS: [TransitionKind; 5] = [TransitionKind::Cut, TransitionKind::Wipe, TransitionKind::Iris, TransitionKind::Melt, TransitionKind::Cells];
+
+/// Engine 2: a generated segment develops at its 16/32-bar phrases. From 8 bars in until 8 bars before its
+/// end, each such phrase (none within a bar of a drop: drops get their own cut) starts a variant of the look
+/// before it (genome::vary: another fold, comp framing or palette). Locked segments are left alone.
+fn phrase_variants(a: &Analysis, segs: Vec<Segment>, blocks: &Blocks, gen_dir: &std::path::Path, engine: u32) -> Result<Vec<Segment>> {
+    let bar = bar_len(a);
+    // Variants pick space folds and comp framings from the frozen library only (seeds stay reproducible
+    // whatever else is in the blocks folder); the full library still builds them.
+    let pinned = blocks.pinned(engine);
+    let mut out = Vec::with_capacity(segs.len());
+    for mut s in segs {
+        // Engine-1 looks (a vibe's) never become engine-2 ones; locked segments and kept variants stay as saved.
+        let Some(mut g) = s.genome.clone().filter(|g| g.is_v2() && !s.locked && !s.variant) else {
+            out.push(s);
+            continue;
+        };
+        let mut pool = blocks.clone();
+        pool.space.retain(|b| b.id == g.space || pinned.space.iter().any(|p| p.id == b.id));
+        pool.comp.retain(|b| b.id == g.comp || pinned.comp.iter().any(|p| p.id == b.id));
+        let cuts: Vec<f64> = a
+            .phrases
+            .iter()
+            .filter(|p| p.bars >= 16)
+            .map(|p| p.time)
+            .filter(|&t| t >= s.start + 8.0 * bar && t <= s.end - 8.0 * bar && !a.drops.iter().any(|d| (d.time - t).abs() <= bar))
+            .collect();
+        let mut pieces = Vec::with_capacity(cuts.len());
+        for (k, &t) in cuts.iter().enumerate() {
+            let seed = hash(s.seed, 0x7A00 + k as u64);
+            g = genome::vary(&g, &pool, seed);
+            let sc = genome::to_scene(&g, blocks, gen_dir)?;
+            let end = cuts.get(k + 1).copied().unwrap_or(s.end);
+            let kind = PHRASE_CUTS[(hash(seed, 9) % PHRASE_CUTS.len() as u64) as usize];
+            pieces.push(Segment {
+                start: t,
+                end,
+                scene: g.id(),
+                seed,
+                locked: false,
+                palette: 0,
+                title: None,
+                transition_in: Transition { kind, duration: if kind.is_morph() { bar } else { 0.0 } },
+                variations: variations(a, &sc, seed, t, end, false, engine),
+                mods: mods(&sc, seed, engine),
+                genome: Some(g.clone()),
+                variant: true,
+            });
+        }
+        if let Some(&first) = cuts.first() {
+            s.end = first;
+        }
+        out.push(s);
+        out.extend(pieces);
+    }
+    Ok(out)
 }
 
 pub(crate) fn bar_len(a: &Analysis) -> f64 {
@@ -411,7 +513,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     let bar = bar_len(a);
     let beat_len = bar / 4.0;
     let segs = &plan.segments;
-    let i = segs.partition_point(|s| s.start <= t).saturating_sub(1);
+    let seg_at = |t: f64| segs.partition_point(|s| s.start <= t).saturating_sub(1);
+    let i = seg_at(t);
 
     // Audio-driven part, shared by both scenes of a morph.
     let kick = onset_env(&a.kicks, t, 0.12);
@@ -494,7 +597,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     let in_morph = |j: usize| {
         let s = segs.get(j)?;
         let dur = s.transition_in.duration;
-        (j > 0 && s.transition_in.kind == TransitionKind::Morph && (t - s.start).abs() < dur / 2.0)
+        (j > 0 && s.transition_in.kind.is_morph() && (t - s.start).abs() < dur / 2.0)
             .then(|| (j, smoothstep(((t - (s.start - dur / 2.0)) / dur) as f32)))
     };
     let morph = in_morph(i).or_else(|| in_morph(i + 1));
@@ -544,6 +647,9 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         exposure: (1.0 + 0.1 * energy) * (1.0 - 0.85 * dark),
         saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2) * (1.0 - 0.8 * dark),
         post,
+        morph_style: morph.map_or(0, |(j, _)| segs[j].transition_in.kind.style()),
+        // A Reset cut clears the feedback on the first step its segment is active (same lookup as `i`).
+        reset: segs.get(i).is_some_and(|s| s.transition_in.kind == TransitionKind::Reset) && i != seg_at(t - 1.0 / SIM_HZ as f64),
     }
 }
 
@@ -600,7 +706,7 @@ pub fn chapters(plan: &Plan) -> Option<String> {
     let duration = plan.segments.last()?.end;
     // Segments under 10 s fold into the chapter before them.
     let mut ch: Vec<(f64, Option<&str>)> = Vec::new();
-    for s in &plan.segments {
+    for s in plan.segments.iter().filter(|s| !s.variant) {
         if ch.last().is_none_or(|&(start, _)| s.start - start >= 10.0) {
             ch.push((s.start, s.title.as_deref()));
         }
@@ -817,6 +923,7 @@ mod tests {
             backdrop: vec![],
             overlay: vec![],
             space: vec![],
+            comp: vec![],
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
         let gen = |_, _, r| Some(genome::random(&blocks, r));
@@ -908,5 +1015,124 @@ mod tests {
         let off = frame_state(&p, &a, &scenes, 33.0, 64, 64, Quality::Draft);
         assert!(on.post.strobe > 0.99 && off.post.strobe < 0.01, "strobe only on downbeats");
         assert!(frame_state(&p, &a, &scenes, 31.02, 64, 64, Quality::Draft).post.tear > 0.7 && off.post.tear < 0.01, "tear rides the snare");
+    }
+
+    /// Saved engine-2 plans must keep rendering the same: per-frame state of a fixed engine-2 plan (captured
+    /// before phase 2). Single mode with no blocks, so no phase-2 planning change can reach the plan itself.
+    #[test]
+    fn engine2_saved_frames_are_frozen() {
+        let mut a = test_analysis();
+        a.snares = vec![Kick { time: 31.0, strength: 1.0 }];
+        let scenes = test_scenes();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Single, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
+        let mut p = plan(&req).unwrap();
+        // A second segment entered by a plain morph, carrying a glitch look.
+        let mut s2 = p.segments[0].clone();
+        s2.start = 96.0;
+        s2.scene = "s2".into();
+        s2.transition_in = Transition { kind: TransitionKind::Morph, duration: 4.0 };
+        s2.genome = Some(Genome { post: Post { strobe: 0.5, tear: 0.5, ..Default::default() }, ..Default::default() });
+        p.segments[0].end = 96.0;
+        p.segments.push(s2);
+        let mut s = serde_json::to_string(&p).unwrap();
+        for t in [0.3, 31.02, 63.75, 64.05, 95.0, 96.0, 97.9, 300.0] {
+            let f = frame_state(&p, &a, &scenes, t, 64, 64, Quality::Draft);
+            let u = &f.a;
+            s += &format!(
+                "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?} {:?} {} {} {} {} {:?}
+",
+                u.res_time, u.beat, u.bands, u.shape, u.p0, u.p1, u.p2, u.p3, u.pal, u.misc, u.hits, f.b.as_ref().map(|b| &b.0), f.mix, f.flash, f.exposure, f.saturation, f.post
+            );
+        }
+        assert_eq!(format!("{:016x}", fnv1a(s.as_bytes())), "7906e936205298a0");
+    }
+
+    #[test]
+    fn engine2_cuts_reset_on_drops_and_morphs_get_styles() {
+        let mut a = test_analysis();
+        a.track_changes[0].kind = ChangeKind::Cut; // 96 s
+        a.drops.push(Drop { time: 96.0, build_start: 80.0, strength: 1.0 });
+        let scenes = test_scenes();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
+        let p = plan(&req).unwrap();
+        // A cut near a drop clears the feedback, on one step only; engine 1 flashes instead.
+        assert_eq!(p.segments[1].transition_in.kind, TransitionKind::Reset);
+        assert!(frame_state(&p, &a, &scenes, 96.0, 64, 64, Quality::Draft).reset);
+        assert!(!frame_state(&p, &a, &scenes, 96.0 + 1.0 / 60.0, 64, 64, Quality::Draft).reset);
+        assert_eq!(plan(&PlanRequest { engine: 1, ..req }).unwrap().segments[1].transition_in.kind, TransitionKind::Flash);
+        // Morphs (track blends from 192 s) get seed-chosen styles, and the frame carries the style.
+        let kinds: std::collections::HashSet<String> = (0..16)
+            .flat_map(|seed| plan(&PlanRequest { seed, ..req }).unwrap().segments.into_iter().skip(2).map(|s| format!("{:?}", s.transition_in.kind)))
+            .collect();
+        assert!(kinds.len() >= 3 && kinds.iter().all(|k| k != "Cut"), "{kinds:?}");
+        let s = &p.segments[2];
+        let f = frame_state(&p, &a, &scenes, s.start, 64, 64, Quality::Draft);
+        assert!(f.b.is_some() && f.morph_style == s.transition_in.kind.style());
+        // Hard shots are placed before morph shots: the reset at 32 s wins over the morph that snaps onto it.
+        let shots = [
+            Shot { time: 30.0, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } },
+            Shot { time: 32.0, transition: Transition { kind: TransitionKind::Reset, duration: 0.0 } },
+        ];
+        let single = plan(&PlanRequest { mode: Mode::Single, shots: &shots, ..req }).unwrap();
+        assert_eq!(single.segments.iter().map(|s| s.transition_in.kind).collect::<Vec<_>>(), [TransitionKind::Cut, TransitionKind::Reset]);
+    }
+
+    #[test]
+    fn phrase_variants_develop_generated_segments() {
+        // Auto mode with no track changes: one generated segment for the whole track.
+        let mut a = test_analysis();
+        a.track_changes.clear();
+        let scenes = test_scenes();
+        let block = |id: &str| crate::genome::Block {
+            id: id.into(),
+            params: vec![crate::scenes::ParamRange { name: String::new(), min: 0.0, max: 1.0, fixed: false }],
+            wgsl: String::new(),
+            toml: String::new(),
+        };
+        let blocks = Blocks {
+            motion: vec![block("m0")],
+            emitter: vec![block("e0")],
+            colour: vec![block("c0")],
+            backdrop: vec![],
+            overlay: vec![],
+            // space_x is not in the frozen library: variants never pick it.
+            space: vec![block("space_kaleido"), block("space_mirror"), block("space_x")],
+            comp: vec![],
+            palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
+        };
+        let gen = |_, _, r| Some(Genome { regime: "calm".into(), ..genome::random(&blocks, r) });
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 1.0, vibe: None, genome_for: Some(&gen), blocks: Some(&blocks), gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
+        let p = plan(&req).unwrap();
+        // Single mode keeps the one look.
+        assert_eq!(plan(&PlanRequest { mode: Mode::Single, ..req }).unwrap().segments.len(), 1);
+        assert!(p.segments.len() > 10, "{}", p.segments.len());
+        assert!(!p.segments[0].variant && p.segments[1..].iter().all(|s| s.variant));
+        for w in p.segments.windows(2) {
+            assert_eq!(w[0].end, w[1].start);
+            let (x, y) = (w[0].genome.as_ref().unwrap(), w[1].genome.as_ref().unwrap());
+            assert!(x.space != y.space || x.palette != y.palette, "each variant changes something");
+            assert_eq!(y.id(), w[1].scene);
+        }
+        assert!(p.segments.iter().all(|s| (s.start - 64.0).abs() > 2.0), "no variant on the drop");
+        assert!(chapters(&p).is_none(), "variants are not chapters");
+        // --reroll of a variant re-rolls the segment it belongs to.
+        let p2 = plan(&PlanRequest { previous: Some(&p), reroll: &[3], ..req }).unwrap();
+        assert_ne!(p2.segments[0].seed, p.segments[0].seed);
+        assert!(p.segments.iter().all(|s| s.genome.as_ref().unwrap().space != "space_x"));
+        // Engine 1 never splits, nor does an engine-1 look (a vibe's) in an engine-2 plan.
+        assert_eq!(plan(&PlanRequest { engine: 1, ..req }).unwrap().segments.len(), 1);
+        let gen1 = |_, _, r| Some(genome::random(&blocks, r));
+        assert_eq!(plan(&PlanRequest { genome_for: Some(&gen1), ..req }).unwrap().segments.len(), 1);
+        // A locked generated segment keeps its variants (another seed would replan everything else);
+        // locking one of its variants locks it the same way.
+        let json = |p: &Plan| serde_json::to_string(&p.segments).unwrap();
+        for k in [0, 3] {
+            let mut locked = p.clone();
+            locked.segments[k].locked = true;
+            let p3 = plan(&PlanRequest { previous: Some(&locked), seed: 8, ..req }).unwrap();
+            let mut want = p.clone();
+            want.segments[0].locked = true;
+            assert_eq!(json(&p3), json(&want), "lock {k}");
+        }
     }
 }

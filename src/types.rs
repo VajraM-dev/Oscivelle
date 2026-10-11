@@ -30,6 +30,12 @@ pub fn hash(a: u64, b: u64) -> u64 {
     mix64(a ^ mix64(b))
 }
 
+/// A new take's seed: random (std's per-process random hasher keys), 9 digits so it's easy to retype.
+pub fn fresh_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new().build_hasher().finish() % 1_000_000_000
+}
+
 /// "M:SS", or "H:MM:SS" when `long` (or the value is an hour or more).
 pub fn hms(secs: u64, long: bool) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
@@ -232,6 +238,9 @@ pub struct Segment {
     /// Set when the scene is generated: `scene` is then `genome.id()` and its .wgsl is rebuilt from this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genome: Option<crate::genome::Genome>,
+    /// Engine 2: a phrase variant of the segment before it (not a chapter; --reroll maps it to its parent).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub variant: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -261,13 +270,50 @@ pub enum TransitionKind {
     Cut,
     Flash,
     Morph,
+    /// Engine 2: a hard cut that clears the feedback (black, then the new look rebuilds).
+    Reset,
+    /// Engine-2 styled morphs (render/trans.wgsl): the incoming look arrives through a mask that grows over
+    /// the window: its brightest parts first, an iris zooming through the centre, a melt from the top, tiles
+    /// in random order.
+    Wipe,
+    Iris,
+    Melt,
+    Cells,
 }
+
+impl TransitionKind {
+    /// Blends two looks over `duration` (Morph and the styled morphs).
+    pub fn is_morph(self) -> bool {
+        MORPHS.contains(&self)
+    }
+
+    /// trans.wgsl style index (0 = Morph's constant crossfade, also every non-morph kind).
+    pub fn style(self) -> u32 {
+        match self {
+            Self::Wipe => 1,
+            Self::Iris => 2,
+            Self::Melt => 3,
+            Self::Cells => 4,
+            _ => 0,
+        }
+    }
+}
+
+/// Engine-2 morph styles the seed picks from (Morph = plain crossfade).
+pub const MORPHS: [TransitionKind; 5] = [TransitionKind::Morph, TransitionKind::Wipe, TransitionKind::Iris, TransitionKind::Melt, TransitionKind::Cells];
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Transition {
     pub kind: TransitionKind,
     /// Seconds (Morph only; centred on segment start).
     pub duration: f64,
+}
+
+impl Transition {
+    /// A drop's hard cut: engine 2 resets (clears the feedback), engine 1 flashes.
+    pub fn drop_cut(engine: u32) -> Transition {
+        Transition { kind: if engine >= 2 { TransitionKind::Reset } else { TransitionKind::Flash }, duration: 0.0 }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -417,4 +463,8 @@ pub struct FrameState {
     pub saturation: f32,
     /// Finishing look (finish pass).
     pub post: Post,
+    /// Morph style (TransitionKind::style; 0 = constant crossfade).
+    pub morph_style: u32,
+    /// Clear the feedback before this step (a Reset cut starts here).
+    pub reset: bool,
 }
