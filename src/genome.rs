@@ -50,6 +50,10 @@ pub struct Genome {
     pub emitter_b: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub comp: String,
+    /// Engine-2 visual grammar (genome::GRAMMARS; "" = unconstrained): which blocks the look and its phrase
+    /// variants pick from (BLOCK_TAGS). Empty = left out of the JSON, so saved ids hold.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub grammar: String,
 }
 
 impl Genome {
@@ -177,6 +181,8 @@ const V2_BLOCKS: &[&str] = &[
     "motion_erode", "motion_etch", "motion_mosh", "motion_sort",
     "emit_cells", "emit_hypertile", "emit_kifs3d", "emit_lyapunov", "emit_mandelbox", "emit_orbit", "emit_sdftunnel", "emit_truchet", "emit_warpfbm",
     "comp_echo", "comp_kaleido", "comp_mirror", "comp_slitscan",
+    "motion_drift", "motion_shear", "motion_sink", "motion_still", "motion_stutter", "space_bands", "space_pixel", "space_tile",
+    "emit_halftone", "emit_scan", "emit_scatter", "emit_steps", "emit_wave",
 ];
 
 impl Blocks {
@@ -312,6 +318,27 @@ impl Blocks {
         b
     }
 
+    /// The blocks a look of `grammar` may use ("" = all): motion, emitter, space and comp blocks tagged with it
+    /// in BLOCK_TAGS (untagged ones only under ""); colours, layers and palettes all.
+    pub fn grammar_pool(&self, grammar: &str) -> Blocks {
+        let mut b = self.clone();
+        if grammar.is_empty() {
+            return b;
+        }
+        let ok = |id: &str| BLOCK_TAGS.iter().any(|(t, gs, _)| *t == id && gs.split(' ').any(|g| g == grammar));
+        for k in ["motion", "emitter", "space", "comp"] {
+            b.list_mut(k).expect("known kind").retain(|x| ok(&x.id));
+        }
+        // ponytail: as in pinned(), a custom --scenes folder may tag nothing; a required kind left empty keeps
+        // its whole list (that grammar then isn't kept, but it runs).
+        for k in ["motion", "emitter"] {
+            if b.list(k).expect("known kind").is_empty() {
+                *b.list_mut(k).expect("known kind") = self.list(k).expect("known kind").clone();
+            }
+        }
+        b
+    }
+
     /// The range of param `key` (see `param_key`).
     fn param(&self, key: &str) -> Option<&ParamRange> {
         let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space, &self.comp].into_iter().flatten();
@@ -412,6 +439,68 @@ pub const BLENDS: [&str; 4] = ["screen", "difference", "multiply", "lighten"];
 /// Engine-2 recipes besides feedback ("" in Genome::template): "stateless" draws the emitter fresh every frame
 /// (no trails, crisp 3D); "dual" adds a second emitter (Genome::emitter_b) over the feedback.
 pub const TEMPLATES: [&str; 2] = ["stateless", "dual"];
+
+/// Engine-2 visual grammars, one per generated segment (drawn before any block, evolve::best_v2): radial
+/// (the classic library: tunnels, folds, spins), flow (advected fields, no centre), grid (tiles, mosaics,
+/// sequencers), scroll (everything slides one way) and still (the camera holds; only the emitter moves).
+pub const GRAMMARS: [&str; 5] = ["radial", "flow", "grid", "scroll", "still"];
+
+/// The grammars each pinned engine-2 motion, emitter, space and comp block belongs to, and what it looks like
+/// (R time-driven rotation, Z steady radial zoom, T tunnel/vanishing point, C centred symmetry, D raymarched
+/// 3D camera, F flowing field; read by the variety test and the scratchpad sim). Frozen like V2_BLOCKS:
+/// retagging changes what new seeds pick, never a saved plan. Colours, layers and palettes suit every grammar.
+const BLOCK_TAGS: &[(&str, &str, &str)] = &[
+    ("comp_echo", "radial", "Z"),
+    ("comp_kaleido", "radial", "RC"),
+    ("comp_mirror", "radial", "C"),
+    ("comp_slitscan", "radial flow grid scroll still", ""),
+    ("emit_blobs", "radial flow still", ""),
+    ("emit_cells", "radial flow grid still", ""),
+    ("emit_clouds", "radial flow scroll", ""),
+    ("emit_contours", "radial flow still", "F"),
+    ("emit_filaments", "radial flow", "F"),
+    ("emit_halftone", "grid still", ""),
+    ("emit_hypertile", "radial", "C"),
+    ("emit_kifs3d", "radial", "RD"),
+    ("emit_lissajous", "radial", "RC"),
+    ("emit_lyapunov", "radial flow still", ""),
+    ("emit_mandelbox", "radial", "RD"),
+    ("emit_orbit", "radial", "C"),
+    ("emit_polygon", "radial", "RZC"),
+    ("emit_rings", "radial", "ZC"),
+    ("emit_scan", "grid scroll", ""),
+    ("emit_scatter", "flow scroll still", ""),
+    ("emit_sdftunnel", "radial", "RZTD"),
+    ("emit_stars", "radial scroll still", ""),
+    ("emit_steps", "grid still", ""),
+    ("emit_truchet", "radial grid scroll", ""),
+    ("emit_warpfbm", "radial flow", "F"),
+    ("emit_wave", "scroll still", ""),
+    ("motion_deepzoom", "radial", "RZT"),
+    ("motion_drift", "flow scroll", ""),
+    ("motion_erode", "radial", "Z"),
+    ("motion_etch", "radial flow", "F"),
+    ("motion_ink", "radial flow", "FZ"),
+    ("motion_kaleido", "radial", "RZC"),
+    ("motion_mosh", "radial grid", ""),
+    ("motion_push", "radial", "RZT"),
+    ("motion_shear", "grid scroll", ""),
+    ("motion_sink", "flow", "F"),
+    ("motion_sort", "radial grid scroll", ""),
+    ("motion_still", "still", ""),
+    ("motion_stutter", "grid still", ""),
+    ("motion_swirl", "radial flow", "F"),
+    ("motion_tunnel", "radial", "RZT"),
+    ("space_bands", "grid scroll", ""),
+    ("space_droste", "radial", "RZTC"),
+    ("space_hyper", "radial", "C"),
+    ("space_kaleido", "radial", "RC"),
+    ("space_kifs", "radial", "C"),
+    ("space_mirror", "radial", "C"),
+    ("space_pixel", "grid still", ""),
+    ("space_polar", "radial", "C"),
+    ("space_tile", "grid", ""),
+];
 
 fn blend_wgsl(name: &str) -> String {
     let e = match name {
@@ -660,7 +749,7 @@ fn pick_blend(h: u64) -> String {
 /// (add half the time), a cosine palette half the time, a recipe (stateless or dual a sixth of the time
 /// each), a comp framing a third of the time, and the segment's `regime` with its finishing look
 /// (mono tints with palette colour 2). `r` = 64-bit hash.
-pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Genome {
+pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime, grammar: &str) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
     let mut g = random(blocks, r);
     if !blocks.space.is_empty() && h(1) % 6 != 0 {
@@ -685,6 +774,7 @@ pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Gen
         g.comp = nth_id(&blocks.comp, h(9) as usize);
     }
     g.regime = regime.name.into();
+    g.grammar = grammar.into();
     g.post = regime.post;
     retint(&mut g);
     g
@@ -889,8 +979,8 @@ mod tests {
             b.add("space", space_block(&format!("space_t{k}"), "")).unwrap();
         }
         let reg = &crate::regime::REGIMES[1];
-        let gs: Vec<Genome> = (0..48).map(|r| random_v2(&b, crate::types::hash(9, r), reg)).collect();
-        assert_eq!(gs[3], random_v2(&b, crate::types::hash(9, 3), reg));
+        let gs: Vec<Genome> = (0..48).map(|r| random_v2(&b, crate::types::hash(9, r), reg, "")).collect();
+        assert_eq!(gs[3], random_v2(&b, crate::types::hash(9, 3), reg, ""));
         let distinct = |f: &dyn Fn(&Genome) -> String| gs.iter().map(f).collect::<std::collections::HashSet<_>>().len();
         assert_eq!(distinct(&|g| g.space.clone()), 4, "none + 3 folds");
         assert_eq!(distinct(&|g| g.blend.clone()), 5, "add + 4 modes");
@@ -899,7 +989,7 @@ mod tests {
             assert!(crate::scenes::palette(&g.palette).is_ok());
             assert_eq!(mutate_v2(g, &b, crate::types::hash(4, i as u64)).regime, reg.name);
         }
-        let mono = random_v2(&b, 5, crate::regime::get("mono").unwrap());
+        let mono = random_v2(&b, 5, crate::regime::get("mono").unwrap(), "");
         assert_eq!(mono.post.tint, crate::scenes::hex(&mono.palette[2]).unwrap());
         for i in 0..32 {
             let m = mutate_v2(&mono, &b, crate::types::hash(6, i));
@@ -1012,7 +1102,7 @@ mod tests {
             b.add("comp", comp_block(&format!("comp_t{k}"), "")).unwrap();
         }
         let reg = &crate::regime::REGIMES[0];
-        let gs: Vec<Genome> = (0..96).map(|r| random_v2(&b, crate::types::hash(11, r), reg)).collect();
+        let gs: Vec<Genome> = (0..96).map(|r| random_v2(&b, crate::types::hash(11, r), reg, "")).collect();
         let distinct = |f: &dyn Fn(&Genome) -> String| gs.iter().map(f).collect::<std::collections::HashSet<_>>().len();
         assert_eq!(distinct(&|g| g.template.clone()), 3, "feedback + stateless + dual");
         assert_eq!(distinct(&|g| g.comp.clone()), 3, "none + 2 comps");

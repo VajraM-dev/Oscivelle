@@ -81,3 +81,14 @@ pass is fed back, so the simulation underneath keeps its own shape.
     `P(8..10)`. So emitters must define `emit` once, never call it themselves, and read params only
     through `EP(`.
   - Dual looks never get a backdrop or overlay, because they use those slots.
+
+## Engine 2: grammars
+Each generated look has a **grammar** (`Genome::grammar`: radial, flow, grid, scroll, still) drawn before
+its blocks. It picks only from blocks tagged with that grammar in `BLOCK_TAGS` (`src/genome.rs`), so a new
+engine-2 motion, emitter, space or comp block needs an entry there (and in `V2_BLOCKS`), or no grammar uses it.
+- **radial**: the classic library: tunnels, folds, spins. Anything centred goes here only.
+- **flow**: advected fields with no centre and no spin. **grid**: tiles, mosaics, sequencers, blocky jumps.
+  **scroll**: the picture slides one way. **still**: the camera holds; motion is decay only (or kick jumps).
+- Non-radial blocks: no time-driven rotation, no zoom about the frame centre, nothing centred. A zoom must be
+  inward (< 1) and about an off-centre point.
+- Motions that slide the whole frame may wrap with `fract(uv)` instead of mirroring off the edge.

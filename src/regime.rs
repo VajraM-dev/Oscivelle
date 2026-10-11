@@ -29,14 +29,19 @@ pub fn get(name: &str) -> Option<&'static Regime> {
     REGIMES.iter().find(|r| r.name == name)
 }
 
-/// The judge's ranges for a regime and recipe (genome::TEMPLATES): stateless looks redraw every frame, so
-/// they move more and carry more fine detail than trails; dual looks stack two emitters and clip a bit more.
-// ponytail: hand-set factors; retune from the gate's smoke renders if a recipe never (or always) passes.
-pub fn gate(r: &Regime, template: &str) -> Thresholds {
+/// The judge's ranges for a regime, recipe (genome::TEMPLATES) and grammar (genome::GRAMMARS): stateless looks
+/// redraw every frame, so they move more and carry more fine detail than trails; dual looks stack two emitters
+/// and clip a bit more; still looks hold the camera, so only their emitter moves.
+// ponytail: hand-set factors; retune from the gate's smoke renders if a recipe or grammar never (or always) passes.
+pub fn gate(r: &Regime, template: &str, grammar: &str) -> Thresholds {
     let th = r.th;
-    match template {
+    let th = match template {
         "stateless" => Thresholds { motion: (th.motion.0, th.motion.1 * 1.5), max_grain: th.max_grain * 1.5, ..th },
         "dual" => Thresholds { max_clipped: th.max_clipped * 1.3, ..th },
+        _ => th,
+    };
+    match grammar {
+        "still" => Thresholds { motion: (th.motion.0 * 0.25, th.motion.1), ..th },
         _ => th,
     }
 }
@@ -56,11 +61,13 @@ mod tests {
     }
 
     #[test]
-    fn recipes_widen_the_regime_gate() {
+    fn recipes_and_still_widen_the_regime_gate() {
         let r = get("calm").unwrap();
-        assert_eq!(gate(r, "").motion, r.th.motion);
-        let s = gate(r, "stateless");
+        assert_eq!(gate(r, "", "").motion, r.th.motion);
+        let s = gate(r, "stateless", "radial");
         assert!(s.motion.1 > r.th.motion.1 && s.max_grain > r.th.max_grain && s.mean == r.th.mean);
-        assert!(gate(r, "dual").max_clipped > r.th.max_clipped);
+        assert!(gate(r, "dual", "").max_clipped > r.th.max_clipped);
+        let still = gate(r, "", "still");
+        assert!(still.motion.0 < r.th.motion.0 && still.motion.1 == r.th.motion.1);
     }
 }

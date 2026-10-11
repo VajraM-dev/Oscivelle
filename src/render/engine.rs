@@ -792,7 +792,7 @@ mod tests {
             let fs = FrameState { scene_a: s.id.clone(), a: u, b: None, mix: 0.0, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default(), morph_style: 0, reset: false };
             e.step(&fs, Some(1.0)).unwrap();
         }
-        assert_eq!(b2.space.len(), 6, "all space blocks present");
+        assert_eq!(b2.space.len(), 9, "all space blocks present");
 
         // Engine 2, phase 2: comp layer passes (hist() on a real ring), every recipe, every morph style and a
         // reset step run without validation errors (wgpu panics on one).
