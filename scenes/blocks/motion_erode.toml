@@ -1,0 +1,14 @@
+kind = "motion"
+description = "Erode: each pixel copies its darkest neighbour, so darkness eats shapes from the edges; on drops it dilates instead"
+[[param]]
+name = "radius"     # px
+min = 1.0
+max = 3.0
+[[param]]
+name = "zoom"
+min = 0.0
+max = 0.004
+[[param]]
+name = "persistence"
+min = 0.9
+max = 0.97

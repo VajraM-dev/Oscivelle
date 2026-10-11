@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Lyapunov fractal: logistic map with r alternating AABAB; stable zones glow, chaos stays dark; the window pans slowly"
+[[param]]
+name = "zoom"       # (a, b) units per centred unit
+min = 0.15
+max = 0.5
+[[param]]
+name = "gain"
+min = 0.8
+max = 2.5
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

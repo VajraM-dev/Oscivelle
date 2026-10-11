@@ -1,0 +1,12 @@
+kind = "space"
+description = "Droste: log-polar spiral; the frame repeats inside itself in an endlessly zooming, twisting tunnel (Escher's Print Gallery)"
+[[param]]
+name = "twist"      # turns per copy (multiplies time via the zoom)
+min = -1.5
+max = 1.5
+fixed = true
+[[param]]
+name = "zoom_speed" # log-scale units per s
+min = 0.05
+max = 0.25
+fixed = true

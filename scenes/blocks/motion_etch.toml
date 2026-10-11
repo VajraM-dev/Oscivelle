@@ -1,0 +1,14 @@
+kind = "motion"
+description = "Etch: the image flows along its own brightness contours, engraving rippling lines; kicks push it across the edges"
+[[param]]
+name = "flow"       # px per step along contours
+min = 0.8
+max = 3.0
+[[param]]
+name = "push"       # px per step across edges on kicks
+min = 1.0
+max = 5.0
+[[param]]
+name = "persistence"
+min = 0.93
+max = 0.98

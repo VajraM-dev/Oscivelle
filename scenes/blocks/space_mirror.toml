@@ -1,0 +1,12 @@
+kind = "space"
+description = "Mirror: the frame folds across one or two slowly turning axes, so every look becomes symmetric"
+[[param]]
+name = "axes"       # 1 or 2 mirror axes
+min = 1.0
+max = 2.99
+fixed = true
+[[param]]
+name = "spin"       # rad/s
+min = -0.05
+max = 0.05
+fixed = true

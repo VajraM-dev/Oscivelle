@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Julia orbit traps: z -> z^2 + c with c riding the Mandelbrot cardioid; orbits passing a point and a line draw filigree"
+[[param]]
+name = "zoom"
+min = 0.7
+max = 1.4
+[[param]]
+name = "sharpness"
+min = 6.0
+max = 20.0
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

@@ -1,0 +1,16 @@
+kind = "emitter"
+description = "Hyperbolic tiling: glowing polygon edges of a {p,q} Poincare-disk tiling shrinking to the rim; kicks light alternate tiles"
+[[param]]
+name = "tiling"     # 0 {4,5}, 1 {5,4}, 2 {3,7}, 3 {6,4}
+min = 0.0
+max = 3.99
+fixed = true
+[[param]]
+name = "line"       # edge width at the centre
+min = 0.01
+max = 0.04
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

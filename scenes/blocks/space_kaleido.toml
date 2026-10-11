@@ -1,0 +1,12 @@
+kind = "space"
+description = "Kaleidoscope: N mirrored wedges around the centre; the wedge pattern turns slowly and breathes on kicks"
+[[param]]
+name = "segments"
+min = 3.0
+max = 12.0
+fixed = true
+[[param]]
+name = "spin"       # rad/s
+min = -0.04
+max = 0.04
+fixed = true

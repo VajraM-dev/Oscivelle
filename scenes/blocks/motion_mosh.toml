@@ -1,0 +1,15 @@
+kind = "motion"
+description = "Datamosh: the frame is cut into blocks; each kick re-rolls which blocks slide and where, smearing in P-frame chunks"
+[[param]]
+name = "blocks"     # blocks across the height
+min = 6.0
+max = 24.0
+fixed = true
+[[param]]
+name = "share"      # share of blocks that slide
+min = 0.2
+max = 0.7
+[[param]]
+name = "persistence"
+min = 0.94
+max = 0.985

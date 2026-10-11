@@ -1,0 +1,14 @@
+kind = "motion"
+description = "Pixel sort: pixels brighter than a threshold smear along one direction, dark ones stay put; the image drips in streaks"
+[[param]]
+name = "threshold"
+min = 0.15
+max = 0.5
+[[param]]
+name = "run"        # px per step
+min = 1.0
+max = 4.0
+[[param]]
+name = "persistence"
+min = 0.95
+max = 0.985

@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Truchet maze: quarter-circle tiles at two scales draw glowing winding paths; a few tiles re-roll every few seconds"
+[[param]]
+name = "scale"      # tiles per unit
+min = 2.0
+max = 6.0
+[[param]]
+name = "width"
+min = 0.03
+max = 0.1
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true
