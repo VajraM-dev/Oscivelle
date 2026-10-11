@@ -611,11 +611,12 @@ mod tests {
         let blocks = crate::genome::Blocks::load(&dir.join("blocks")).unwrap();
         let gen_dir = std::env::temp_dir().join("visualiser_gen_test");
         let (mut gen, mut names) = (Vec::new(), Vec::new());
-        for m in &blocks.motion {
-            for em in &blocks.emitter {
-                for c in &blocks.colour {
-                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: blocks.palettes[0].clone(), params: Default::default(), ..Default::default() };
-                    gen.push(crate::genome::write(&g, &blocks, &gen_dir).unwrap());
+        let v1 = blocks.pinned(1);
+        for m in &v1.motion {
+            for em in &v1.emitter {
+                for c in &v1.colour {
+                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: v1.palettes[0].clone(), params: Default::default(), ..Default::default() };
+                    gen.push(crate::genome::write(&g, &v1, &gen_dir).unwrap());
                     names.push(format!("{} + {} + {}", m.id, em.id, c.id));
                 }
             }
@@ -671,5 +672,35 @@ mod tests {
         e.finish(&mut enc, &out.create_view(&Default::default()), &fs, true, false);
         queue.submit([enc.finish()]);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+        // Engine 2: every new block, space fold, blend mode and regime compiles and steps at least once
+        // (round-robin partners; engine2_block_helpers_are_prefixed guarantees any pairing links).
+        let b2 = blocks.pinned(2);
+        let (ns, nb, nr) = (b2.space.len() + 1, crate::genome::BLENDS.len() + 1, crate::regime::REGIMES.len());
+        let n = [b2.motion.len(), b2.emitter.len(), b2.colour.len(), ns, nb, nr].into_iter().max().unwrap();
+        let mut v2 = Vec::new();
+        for i in 0..n {
+            let g = crate::genome::Genome {
+                motion: b2.motion[i % b2.motion.len()].id.clone(),
+                emitter: b2.emitter[i % b2.emitter.len()].id.clone(),
+                colour: b2.colour[i % b2.colour.len()].id.clone(),
+                palette: b2.palettes[0].clone(),
+                space: if i % ns == 0 { String::new() } else { b2.space[i % ns - 1].id.clone() },
+                blend: if i % nb == 0 { String::new() } else { crate::genome::BLENDS[i % nb - 1].into() },
+                regime: crate::regime::REGIMES[i % nr].name.into(),
+                ..Default::default()
+            };
+            v2.push(crate::genome::write(&g, &b2, &gen_dir).unwrap());
+        }
+        let mut e = Engine::new(&device, &queue, &v2, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[]);
+        for s in &v2 {
+            e.compile(&s.id).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
+            let mut u = SceneUniforms::default();
+            u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
+            u.p0 = [1.0; 4];
+            let fs = FrameState { scene_a: s.id.clone(), a: u, b: None, mix: 0.0, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default() };
+            e.step(&fs, Some(1.0)).unwrap();
+        }
+        assert_eq!(b2.space.len(), 6, "all space blocks present");
     }
 }

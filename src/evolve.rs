@@ -72,6 +72,76 @@ fn pick(scored: Vec<(f32, Genome)>, seed: u64) -> Option<Genome> {
     pass.into_iter().nth((hash(seed, 0x6A7E) % n.max(1)) as usize)
 }
 
+/// Engine 2, same budget as `best`. The verdict only gates (by the segment's seed-chosen regime), the
+/// mutation parents are picked by seed, not score, and the final pick spreads over look space: the seed
+/// picks an occupied cell (score::cell), then the candidate there farthest from `avoid` (the hand-made
+/// scenes and this plan's earlier picks). Returns the genome and its descriptor.
+#[allow(clippy::too_many_arguments)]
+pub fn best_v2(
+    judge: &mut Judge,
+    blocks: &Blocks,
+    gen_dir: &std::path::Path,
+    a: &Analysis,
+    start: f64,
+    end: f64,
+    seed: u64,
+    budget: usize,
+    avoid: &[[f32; 6]],
+) -> Option<(Genome, [f32; 6])> {
+    use crate::{regime::REGIMES, score};
+    let t0 = (start + 30.0).min((start + end) / 2.0);
+    let regime = &REGIMES[(hash(seed, 0x4E61) % REGIMES.len() as u64) as usize];
+    let mut seen = std::collections::HashMap::new();
+    let mut measure = |g: &Genome| -> Option<[f32; 6]> {
+        *seen.entry(g.id()).or_insert_with(|| {
+            let sc = genome::write(g, blocks, gen_dir).ok()?;
+            let m = judge.measure(sc, a, t0, 4.0).ok()?;
+            score::passes(&m, &regime.th).then(|| score::descriptor(&m))
+        })
+    };
+    let first = (budget * 2 / 5).max(2);
+    let mut pass: Vec<(Genome, [f32; 6])> = Vec::new();
+    let mut k = 0u64;
+    let fresh = |pass: &mut Vec<(Genome, [f32; 6])>, k: &mut u64, measure: &mut dyn FnMut(&Genome) -> Option<[f32; 6]>| {
+        let g = genome::random_v2(blocks, hash(seed, *k), regime);
+        *k += 1;
+        if let Some(d) = measure(&g) {
+            pass.push((g, d));
+        }
+    };
+    for _ in 0..first {
+        fresh(&mut pass, &mut k, &mut measure);
+    }
+    let parents: Vec<Genome> = (0..2.min(pass.len())).map(|j| pass[(hash(seed, 0xA0 + j as u64) % pass.len() as u64) as usize].0.clone()).collect();
+    let rest = budget.saturating_sub(first);
+    let per = rest.div_ceil(2) / parents.len().max(1);
+    for (pi, p) in parents.iter().enumerate() {
+        for j in 0..per {
+            let child = genome::mutate_v2(p, blocks, hash(seed, 1000 + (pi * 100 + j) as u64));
+            if let Some(d) = measure(&child) {
+                pass.push((child, d));
+            }
+        }
+    }
+    for _ in 0..rest - per * parents.len() {
+        fresh(&mut pass, &mut k, &mut measure);
+    }
+    pick_v2(pass, seed, avoid)
+}
+
+/// Seed-chosen occupied cell, then the candidate in it farthest from everything in `avoid`.
+fn pick_v2(pass: Vec<(Genome, [f32; 6])>, seed: u64, avoid: &[[f32; 6]]) -> Option<(Genome, [f32; 6])> {
+    use crate::score::cell;
+    let mut ids = std::collections::HashSet::new();
+    let pass: Vec<_> = pass.into_iter().filter(|(g, _)| ids.insert(g.id())).collect();
+    let mut cells: Vec<usize> = pass.iter().map(|(_, d)| cell(d)).collect();
+    cells.sort_unstable();
+    cells.dedup();
+    let c = *cells.get((hash(seed, 0xCE11) % cells.len().max(1) as u64) as usize)?;
+    let dist = |d: &[f32; 6]| avoid.iter().map(|a| a.iter().zip(d).map(|(x, y)| (x - y).powi(2)).sum::<f32>()).fold(f32::MAX, f32::min);
+    pass.into_iter().filter(|(_, d)| cell(d) == c).max_by(|x, y| dist(&x.1).total_cmp(&dist(&y.1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +154,21 @@ mod tests {
         assert!(picks.len() > 1, "seeds should vary the pick: {picks:?}");
         assert!(!picks.contains("weak"));
         assert_eq!(pick(pool.clone(), 5).map(|g| g.id()), pick(pool, 5).map(|g| g.id()), "deterministic");
+    }
+
+    #[test]
+    fn pick_v2_spreads_over_cells_and_avoids_seen_looks() {
+        let g = |m: &str| Genome { motion: m.into(), ..Default::default() };
+        let dark = [0.1, 0.1, 0.5, 0.1, 0.5, 0.5];
+        let bright = [0.9, 0.9, 0.5, 0.9, 0.5, 0.5];
+        let bright2 = [0.95, 0.95, 0.9, 0.95, 0.9, 0.9];
+        let pool = vec![(g("d"), dark), (g("b"), bright), (g("b2"), bright2)];
+        let picks: std::collections::HashSet<String> = (0..32).map(|s| pick_v2(pool.clone(), s, &[]).unwrap().0.motion).collect();
+        assert!(picks.contains("d") && picks.len() >= 2, "{picks:?}");
+        // In the bright cell, the look farthest from an already-chosen bright look wins.
+        let s = (0..64).find(|&s| pick_v2(pool.clone(), s, &[]).unwrap().0.motion != "d").unwrap();
+        assert_eq!(pick_v2(pool.clone(), s, &[bright2]).unwrap().0.motion, "b");
+        assert_eq!(pick_v2(pool.clone(), 3, &[dark]).map(|x| x.0.id()), pick_v2(pool, 3, &[dark]).map(|x| x.0.id()));
+        assert!(pick_v2(vec![], 1, &[]).is_none());
     }
 }

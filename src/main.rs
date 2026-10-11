@@ -100,6 +100,10 @@ struct Cli {
     /// Finishing look for the whole video: clean, vhs, crt or mono.
     #[arg(long, value_enum)]
     look: Option<Look>,
+    /// Visual engine: 1 = the original looks (default), 2 = space folds, blend modes, moods, new blocks, onset hits
+    /// and drop build-ups (every seed a different piece). Default: the saved plan's, else 1.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=2))]
+    engine: Option<u32>,
     /// Set up an OpenAI-compatible AI service (URL, key, model) for the AI features.
     #[arg(long)]
     setup_ai: bool,
@@ -192,7 +196,11 @@ fn run(cli: Cli) -> Result<()> {
         bail!("--generated must be between 0 and 1");
     }
 
-    let analysis = load_or_analyse(&audio, &data, cli.reanalyse)?;
+    let plan_path = data.join("plan.json");
+    let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let engine = cli.engine.or(previous.as_ref().map(|p| p.engine)).unwrap_or(1);
+    // Engine 2 needs snares: older analyses are redone once.
+    let analysis = load_or_analyse(&audio, &data, cli.reanalyse, if engine >= 2 { ANALYSIS_VERSION } else { 0 })?;
 
     if let Some(prompt) = &cli.author {
         let c = llm::load().ok_or_else(|| anyhow!("--author needs an AI service: run visualiser --setup-ai"))?;
@@ -216,8 +224,6 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    let plan_path = data.join("plan.json");
-    let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
     // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
     let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
     // A vibe or --layers only steers generated scenes, so they imply some.
@@ -242,7 +248,7 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref(), 1))
+        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref(), engine))
         && previous.as_ref().is_some_and(|p| {
             p.layers == cli.layers && p.plates.starts_with(&user_plates) && p.plates[user_plates.len()..].iter().all(|q| q.starts_with(&ai_plates))
         });
@@ -264,6 +270,9 @@ fn run(cli: Cli) -> Result<()> {
     } else {
         None
     };
+    // Evolution and dressing pick from the frozen library of this engine. A vibe also uses the AI's own
+    // blocks. The full `blocks` still builds any genome a saved plan names.
+    let core = blocks.as_ref().map(|b| if cli.vibe.is_some() { b.clone() } else { b.pinned(engine) });
     // --keep acts on the saved plan as it is (the one the video was rendered from), never a new one.
     if let Some(i) = cli.keep {
         let plan = previous.as_ref().ok_or_else(|| anyhow!("--keep needs a saved plan: render once first"))?;
@@ -287,6 +296,8 @@ fn run(cli: Cli) -> Result<()> {
             }
             // The judge, made on the first segment that is actually generated (unless the vibe made it).
             let gen = OnceCell::new();
+            let handmade = OnceCell::new();
+            let picks = RefCell::new(Vec::<[f32; 6]>::new());
             if let Some(j) = judge {
                 let _ = gen.set(Ok(RefCell::new(j)));
             }
@@ -296,9 +307,21 @@ fn run(cli: Cli) -> Result<()> {
             let k = Cell::new(0usize);
             let budget = if cli.quality == Quality::Draft { 10 } else { 20 };
             let evolved = |start: f64, end: f64, r| {
-                let blocks = blocks.as_ref().filter(|_| generated > 0.0)?;
+                let blocks = core.as_ref().filter(|_| generated > 0.0)?;
                 eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
                 let judge = gen.get_or_init(|| score::Judge::new(&scenes, &scenes_dir, cli.cpu).map(RefCell::new)).as_ref().ok()?;
+                if engine >= 2 && seeds.is_empty() {
+                    let mut j = judge.borrow_mut();
+                    // Distance from the hand-made scenes keeps engine 2 off their look (measured once per run).
+                    let hm: &Vec<[f32; 6]> = handmade.get_or_init(|| {
+                        let t = 60.0f64.min(analysis.duration / 2.0);
+                        scenes.iter().filter(|s| scenes::BUILTIN.contains(&s.id.as_str())).filter_map(|s| j.measure(s.clone(), &analysis, t, 4.0).ok()).map(|m| score::descriptor(&m)).collect()
+                    });
+                    let avoid: Vec<[f32; 6]> = hm.iter().chain(picks.borrow().iter()).copied().collect();
+                    let (g, d) = evolve::best_v2(&mut j, blocks, &gen_dir, &analysis, start, end, r, budget, &avoid)?;
+                    picks.borrow_mut().push(d);
+                    return Some(g);
+                }
                 // The take's seed shifts the rotation, so new takes start from other looks.
                 let i = k.replace(k.get() + 1).wrapping_add(hash(cli.seed, 0x5EED) as usize) % seeds.len().max(1);
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
@@ -308,7 +331,7 @@ fn run(cli: Cli) -> Result<()> {
             // --layers dresses the evolved look (unless it already has layers, e.g. from the vibe).
             let dressed = |start: f64, end: f64, r: u64| {
                 let g = evolved(start, end, r)?;
-                match blocks.as_ref() {
+                match core.as_ref() {
                     Some(b) if cli.layers && !g.has_layers() => Some(genome::dress(&g, b, hash(r, 7), plates.len(), &text)),
                     _ => Some(g),
                 }
@@ -340,6 +363,9 @@ fn run(cli: Cli) -> Result<()> {
             };
             let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if story.is_empty() { &dressed } else { &storyboard };
             let shots = if story.is_empty() { shots } else { story.iter().map(|(s, _)| *s).collect() };
+            if engine >= 2 && cli.vibe.is_some() {
+                eprintln!("note: --vibe uses engine 1 looks");
+            }
             let mut plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
@@ -355,7 +381,7 @@ fn run(cli: Cli) -> Result<()> {
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
                 shots: &shots,
-                engine: 1,
+                engine,
             })?;
             plan.plates = plates.clone();
             plan.layers = cli.layers;
@@ -490,10 +516,10 @@ fn vibe_seeds(cli: &Cli, v: &str, images: &[PathBuf], scenes: &[scenes::Scene], 
     (Some(judge), design)
 }
 
-fn load_or_analyse(audio: &Path, data: &Path, reanalyse: bool) -> Result<Analysis> {
+fn load_or_analyse(audio: &Path, data: &Path, reanalyse: bool, min_version: u32) -> Result<Analysis> {
     let path = data.join("analysis.json");
     if !reanalyse {
-        if let Some(a) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+        if let Some(a) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).filter(|a: &Analysis| a.version >= min_version) {
             eprintln!("using saved analysis {}", path.display());
             return Ok(a);
         }
