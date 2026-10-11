@@ -15,7 +15,7 @@ mod types;
 mod vibe;
 mod wizard;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
@@ -93,7 +93,7 @@ struct Cli {
     /// Motion graphics on generated scenes: a backdrop (sky, raymarched sea world, your --image), sometimes a HUD/grid/text overlay, and a new shot at each drop.
     #[arg(long)]
     layers: bool,
-    /// A picture the looks can show (with --layers or --vibe); repeatable, up to 8.
+    /// A picture the looks can show (with --layers); repeatable, up to 8.
     #[arg(long)]
     image: Vec<PathBuf>,
     /// Finishing look for the whole video: clean, vhs, crt or mono.
@@ -202,9 +202,18 @@ fn run(cli: Cli) -> Result<()> {
     let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
     // A vibe or --layers only steers generated scenes, so they imply some.
     let generated = if (cli.vibe.is_some() || cli.layers) && generated == 0.0 { 1.0 } else { generated };
-    let plates: Vec<PathBuf> = cli.image.iter().take(plates::MAX).cloned().collect();
-    if !plates.is_empty() && !cli.layers && cli.vibe.is_none() {
-        eprintln!("warning: --image is only shown with --layers or --vibe");
+    // Absolute, so the saved plan still finds them from another working directory.
+    let plates = cli
+        .image
+        .iter()
+        .take(plates::MAX)
+        .map(|p| std::fs::canonicalize(p).with_context(|| format!("--image {}", p.display())))
+        .collect::<Result<Vec<PathBuf>>>()?;
+    if cli.image.len() > plates::MAX {
+        eprintln!("warning: only the first {} --image pictures are used", plates::MAX);
+    }
+    if !plates.is_empty() && !cli.layers {
+        eprintln!("warning: --image is only shown with --layers");
     }
     let reuse = !cli.replan
         && !cli.reanalyse
@@ -212,8 +221,7 @@ fn run(cli: Cli) -> Result<()> {
         && cli.markers.is_none()
         && cli.scene.is_none()
         && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()))
-        // ponytail: AI plates follow the user's (M2), so a prefix match keeps them.
-        && previous.as_ref().is_some_and(|p| p.layers == cli.layers && p.plates.starts_with(&plates));
+        && previous.as_ref().is_some_and(|p| p.layers == cli.layers && p.plates == plates);
     let gen_dir = data.join("gen");
     // The vibe runs before blocks load, so the blocks it writes are included. Its judge is reused by evolution.
     let (judge, seeds) = match &cli.vibe {

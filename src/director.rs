@@ -120,8 +120,10 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     }
 
     // Shot changes inside the music (storyboard / --layers). Markers mode keeps the user's own cuts.
+    // Flashes (drops) are placed first, so a morph too close to one is the shot that gets dropped.
     if req.mode != Mode::Markers {
-        for s in req.shots {
+        let is_flash = |s: &&Shot| s.transition.kind == TransitionKind::Flash;
+        for s in req.shots.iter().filter(is_flash).chain(req.shots.iter().filter(|s| !is_flash(s))) {
             let t = snap(a, s.time, bar);
             if t < 8.0 * bar || a.duration - t < 8.0 * bar || bounds.iter().any(|b| (b.start - t).abs() < 8.0 * bar) {
                 continue;
@@ -471,7 +473,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         (j > 0 && s.transition_in.kind == TransitionKind::Morph && (t - s.start).abs() < dur / 2.0)
             .then(|| (j, smoothstep(((t - (s.start - dur / 2.0)) / dur) as f32)))
     };
-    let (scene_a, ua, b, mix) = match in_morph(i).or_else(|| in_morph(i + 1)) {
+    let morph = in_morph(i).or_else(|| in_morph(i + 1));
+    let (scene_a, ua, b, mix) = match morph {
         Some((j, m)) => {
             let (ida, ua) = build(&segs[j - 1]);
             (ida, ua, Some(build(&segs[j])), m)
@@ -492,7 +495,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     let drop_flash = if drop_dt < beat_len { 0.4 * drop_env } else { 0.0 };
     // Finishing look: --look wins, else the segment's (blended through a morph).
     let post_of = |s: &Segment| plan.post.or_else(|| s.genome.as_ref().map(|g| g.post)).unwrap_or_default();
-    let post = match in_morph(i).or_else(|| in_morph(i + 1)) {
+    let post = match morph {
         Some((j, m)) => post_of(&segs[j - 1]).lerp(&post_of(&segs[j]), m),
         None => segs.get(i).map(post_of).unwrap_or_default(),
     };
@@ -701,8 +704,15 @@ mod tests {
         let a = test_analysis();
         let scenes = test_scenes();
         let flash = Transition { kind: TransitionKind::Flash, duration: 0.0 };
-        // 64 s is kept; 70 s is within 8 bars of it and 2 s is within 8 bars of the start: both dropped.
-        let shots = [Shot { time: 64.0, transition: flash }, Shot { time: 70.0, transition: flash }, Shot { time: 2.0, transition: flash }];
+        let morph = Transition { kind: TransitionKind::Morph, duration: 4.0 };
+        // 64 s is kept (a flash beats the earlier morph at 56 s); 70 s is within 8 bars of it and 2 s is
+        // within 8 bars of the start: all three dropped.
+        let shots = [
+            Shot { time: 56.0, transition: morph },
+            Shot { time: 64.0, transition: flash },
+            Shot { time: 70.0, transition: flash },
+            Shot { time: 2.0, transition: flash },
+        ];
         let req = PlanRequest {
             analysis: &a,
             scenes: &scenes,

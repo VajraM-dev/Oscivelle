@@ -123,9 +123,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let levels = mix(64.0, 4.0, f.p0.z);
         c = floor(c * levels + 0.5) / levels;
     }
-    // Scanlines: one dark line every 2 px at 1080p (scaled with the output height).
+    // Scanlines: whole-pixel, pitch 2h px with h = height / 1080 rows dark (one dark row in two at 1080p).
     if (f.p0.y > 0.0) {
-        c *= 1.0 - f.p0.y * 0.35 * (0.5 + 0.5 * cos(in.pos.y * 540.0 / f.r.y * 6.2831853));
+        let h = max(1.0, round(f.r.y / 1080.0));
+        c *= 1.0 - f.p0.y * 0.35 * (floor(in.pos.y / h) % 2.0);
     }
 
     if (f.a.w > 0.0) {

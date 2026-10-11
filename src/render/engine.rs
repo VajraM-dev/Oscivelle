@@ -313,16 +313,21 @@ impl Engine {
         self.failed.remove(id);
     }
 
-    /// (Re)compiles a scene (and its layer pass, if it has one) from disk. On failure existing pipelines are kept.
+    /// (Re)compiles a scene (and its layer pass, if it has one) from disk. On failure existing pipelines are kept,
+    /// except a failing layer pass: the feedback pipeline is still installed (no layers) and the error returned.
     pub fn compile(&mut self, id: &str) -> Result<()> {
         match self.try_compile(id) {
             Ok((pl, layers)) => {
                 self.pipelines.insert(id.to_string(), pl);
-                match layers {
-                    Some(l) => self.layer_pipelines.insert(id.to_string(), l),
-                    None => self.layer_pipelines.remove(id),
-                };
                 self.failed.remove(id);
+                match layers {
+                    Ok(Some(l)) => self.layer_pipelines.insert(id.to_string(), l),
+                    Ok(None) => self.layer_pipelines.remove(id),
+                    Err(e) => {
+                        self.layer_pipelines.remove(id);
+                        return Err(e);
+                    }
+                };
                 Ok(())
             }
             Err(e) => {
@@ -332,10 +337,10 @@ impl Engine {
         }
     }
 
-    fn try_compile(&self, id: &str) -> Result<(wgpu::RenderPipeline, Option<wgpu::RenderPipeline>)> {
+    fn try_compile(&self, id: &str) -> Result<(wgpu::RenderPipeline, Result<Option<wgpu::RenderPipeline>>)> {
         let scene = self.scenes.iter().find(|s| s.id == id).with_context(|| format!("unknown scene '{id}'"))?;
         let main = self.build(id, scenes::shader_source(&self.scenes_dir, scene)?)?;
-        let layers = scenes::layers_source(&self.scenes_dir, scene).map(|src| self.build(&format!("{id} layers"), src?)).transpose()?;
+        let layers = scenes::layers_source(&self.scenes_dir, scene).map(|src| self.build(&format!("{id} layers"), src?)).transpose();
         Ok((main, layers))
     }
 
@@ -359,7 +364,12 @@ impl Engine {
         for id in std::iter::once(&fs.scene_a).chain(fs.b.as_ref().map(|b| &b.0)) {
             if !self.pipelines.contains_key(id) && !self.failed.contains(id) {
                 if let Err(e) = self.compile(id) {
-                    res = Err(e);
+                    // A broken layer pass only costs the scene its layers; the judge still sees it via `compile`.
+                    if self.pipelines.contains_key(id) {
+                        eprintln!("warning: {e:#} (rendering it without layers)");
+                    } else {
+                        res = Err(e);
+                    }
                 }
             }
         }
