@@ -228,7 +228,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             // Saved mods index the saved scene's params; a forced scene gets its own.
             // A forced scene also drops the genome (force always wins).
             let (mods, genome) = match req.force_scene.filter(|&f| f != s.scene) {
-                Some(f) => (req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed)), None),
+                Some(f) => (req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed, req.engine)), None),
                 None => (s.mods.clone(), s.genome.clone()),
             };
             segments.push(Segment { end: ends[i], scene, mods, genome, ..s.clone() });
@@ -283,7 +283,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             locked: false,
             title: b.title.clone().or_else(|| kept(i).and_then(|s| s.title.clone())),
             transition_in: if i == 0 { CUT } else { b.transition },
-            mods: mods(sc, seed),
+            mods: mods(sc, seed, req.engine),
             genome,
         });
     }
@@ -366,8 +366,12 @@ fn param_mut(u: &mut SceneUniforms, j: usize) -> &mut f32 {
 const SOURCES: [ModSource; 7] =
     [ModSource::Kick, ModSource::Bass, ModSource::Mid, ModSource::High, ModSource::Energy, ModSource::Tension, ModSource::Drop];
 
+/// Engine 2 adds onset sources (appended, so engine-1 picks are unchanged).
+const SOURCES_V2: [ModSource; 9] = [ModSource::Kick, ModSource::Bass, ModSource::Mid, ModSource::High, ModSource::Energy, ModSource::Tension, ModSource::Drop, ModSource::Snare, ModSource::Punch];
+
 /// 1-2 audio routings onto random non-fixed params (own rng stream, so scene/palette/variation picks are unchanged).
-fn mods(sc: &Scene, seed: u64) -> Vec<Mod> {
+fn mods(sc: &Scene, seed: u64, engine: u32) -> Vec<Mod> {
+    let sources: &[ModSource] = if engine >= 2 { &SOURCES_V2 } else { &SOURCES };
     let free: Vec<usize> = (0..sc.params.len()).filter(|&i| !sc.params[i].fixed).collect();
     if free.is_empty() {
         return Vec::new();
@@ -376,7 +380,7 @@ fn mods(sc: &Scene, seed: u64) -> Vec<Mod> {
     let mut out: Vec<Mod> = Vec::new();
     for _ in 0..1 + rng.next() % 2 {
         let param = free[(rng.next() % free.len() as u64) as usize];
-        let source = SOURCES[(rng.next() % SOURCES.len() as u64) as usize];
+        let source = sources[(rng.next() % sources.len() as u64) as usize];
         let depth = rng.signed().signum() * (0.15 + 0.25 * (rng.signed() * 0.5 + 0.5));
         if !out.iter().any(|m| m.param == param) {
             out.push(Mod { param, source, depth });
@@ -396,21 +400,19 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     let i = segs.partition_point(|s| s.start <= t).saturating_sub(1);
 
     // Audio-driven part, shared by both scenes of a morph.
-    let k = a.kicks.partition_point(|k| k.time <= t + 0.01);
-    let kick = a.kicks[k.saturating_sub(4)..k]
-        .iter()
-        .map(|kk| {
-            let dt = t - kk.time;
-            let env = if dt < 0.0 { 1.0 + dt / 0.01 } else { (-dt / 0.12).exp() };
-            kk.strength as f64 * env
-        })
-        .fold(0.0, f64::max);
-    let since_kick = a.kicks[..a.kicks.partition_point(|k| k.time <= t)].last().map_or(1e3, |k| t - k.time);
+    let kick = onset_env(&a.kicks, t, 0.12);
+    let since_kick = since(&a.kicks, t);
     let d = a.drops.partition_point(|d| d.time <= t);
     let (drop_env, drop_dt) = match d.checked_sub(1).map(|j| a.drops[j]) {
         Some(dr) => (dr.strength as f64 * (-(t - dr.time) / (2.0 * bar)).exp(), t - dr.time),
         None => (0.0, f64::INFINITY),
     };
+    // Half a bar before each drop: 0 → drop strength (engine 2 darkens and drains towards it; shaders squeeze).
+    let antic = a.drops.get(d).map_or(0.0, |dr| {
+        let pre = dr.time - t;
+        if pre > 0.0 && pre < bar / 2.0 { smoothstep((1.0 - pre / (bar / 2.0)) as f32) * dr.strength } else { 0.0 }
+    });
+    let snare = onset_env(&a.snares, t, 0.09);
     let c = &a.curves;
     let curve = |v: &[f32]| sample(v, c.rate, t);
     let (energy, tension) = (curve(&c.energy), curve(&c.tension));
@@ -425,6 +427,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         bands: [curve(&c.sub), curve(&c.bass), curve(&c.mid), curve(&c.high)],
         shape: [energy, tension, drop_env as f32, 0.0],
         misc: [0.0, if quality == Quality::Final { 1.0 } else { 0.0 }, since_kick as f32, drop_dt.min(1e3) as f32],
+        hits: [snare as f32, onset_env(&a.kicks, t, 0.045) as f32, since(&a.snares, t).min(1e3) as f32, antic],
         ..Default::default()
     };
 
@@ -499,21 +502,34 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         .get(i)
         .filter(|s| s.transition_in.kind == TransitionKind::Flash && t >= s.start)
         .map_or(0.0, |s| (1.0 - (t - s.start) / 0.4).max(0.0).powi(2));
-    let drop_flash = if drop_dt < beat_len { 0.4 * drop_env } else { 0.0 };
+    let v2 = plan.engine >= 2;
+    let drop_flash = if drop_dt < beat_len { (if v2 { 0.8 } else { 0.4 }) * drop_env } else { 0.0 };
     // Finishing look: --look wins, else the segment's (blended through a morph).
     let post_of = |s: &Segment| plan.post.or_else(|| s.genome.as_ref().map(|g| g.post)).unwrap_or_default();
     let post = match morph {
         Some((j, m)) => post_of(&segs[j - 1]).lerp(&post_of(&segs[j]), m),
         None => segs.get(i).map(post_of).unwrap_or_default(),
     };
+    let mut post = post;
+    if post.strobe + post.invert + post.rgb_split + post.tear > 0.0 {
+        // Flashes (strobe, invert) only on downbeats: ≤ 1 per bar, under the 3 Hz flash limit (WCAG 2.3.1)
+        // below 720 BPM. Displacement glitches (split, tear) ride the snares.
+        let since_down = a.downbeats[..a.downbeats.partition_point(|&x| x <= t)].last().map_or(1e3, |&x| t - x);
+        let down = (-since_down / 0.08).exp() as f32;
+        post.strobe *= down;
+        post.invert *= down;
+        post.rgb_split *= snare as f32;
+        post.tear *= snare as f32;
+    }
+    let squeeze = if v2 { 1.0 - antic } else { 1.0 };
     FrameState {
         scene_a,
         a: ua,
         b,
         mix,
         flash: (0.06 * kick + trans_flash + drop_flash).clamp(0.0, 1.0) as f32,
-        exposure: 1.0 + 0.1 * energy,
-        saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2),
+        exposure: (1.0 + 0.1 * energy) * (1.0 - 0.85 * (1.0 - squeeze)),
+        saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2) * (1.0 - 0.8 * (1.0 - squeeze)),
         post,
     }
 }
@@ -521,6 +537,24 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
 fn smoothstep(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
+}
+
+/// Strongest envelope of the last 4 onsets at `t`: 10 ms attack, exponential decay `decay` s.
+fn onset_env(xs: &[Kick], t: f64, decay: f64) -> f64 {
+    let k = xs.partition_point(|k| k.time <= t + 0.01);
+    xs[k.saturating_sub(4)..k]
+        .iter()
+        .map(|kk| {
+            let dt = t - kk.time;
+            let env = if dt < 0.0 { 1.0 + dt / 0.01 } else { (-dt / decay).exp() };
+            kk.strength as f64 * env
+        })
+        .fold(0.0, f64::max)
+}
+
+/// Seconds since the last onset at or before `t` (1e3 if none).
+fn since(xs: &[Kick], t: f64) -> f64 {
+    xs[..xs.partition_point(|k| k.time <= t)].last().map_or(1e3, |k| t - k.time)
 }
 
 /// Linear interpolation into a curve sampled at `rate` Hz.
@@ -817,5 +851,28 @@ mod tests {
             );
         }
         assert_eq!(format!("{:016x}", fnv1a(s.as_bytes())), "ef50e7299a0f9586");
+    }
+
+    #[test]
+    fn engine2_hits_anticipation_and_gated_glitch() {
+        let mut a = test_analysis();
+        a.snares = vec![Kick { time: 31.0, strength: 1.0 }];
+        let scenes = test_scenes();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 2 };
+        let mut p = plan(&req).unwrap();
+        let f = frame_state(&p, &a, &scenes, 31.02, 64, 64, Quality::Draft);
+        assert!(f.a.hits[0] > 0.7 && (f.a.hits[2] - 0.02).abs() < 1e-3, "{:?}", f.a.hits);
+        // Drop at 64 s, bar 2 s: 0.25 s before it, anticipation = smoothstep(0.75) ≈ 0.84 and the frame darkens
+        // to ≈ 0.30 exposure (engine 2 only).
+        let pre = frame_state(&p, &a, &scenes, 63.75, 64, 64, Quality::Draft);
+        assert!(pre.a.hits[3] > 0.8 && pre.exposure < 0.6, "{:?} {}", pre.a.hits, pre.exposure);
+        p.engine = 1;
+        assert!(frame_state(&p, &a, &scenes, 63.75, 64, 64, Quality::Draft).exposure > 1.0);
+        p.engine = 2;
+        p.segments[0].genome = Some(Genome { post: Post { strobe: 1.0, tear: 1.0, ..Default::default() }, ..Default::default() });
+        let on = frame_state(&p, &a, &scenes, 32.0, 64, 64, Quality::Draft);
+        let off = frame_state(&p, &a, &scenes, 33.0, 64, 64, Quality::Draft);
+        assert!(on.post.strobe > 0.99 && off.post.strobe < 0.01, "strobe only on downbeats");
+        assert!(frame_state(&p, &a, &scenes, 31.02, 64, 64, Quality::Draft).post.tear > 0.7 && off.post.tear < 0.01, "tear rides the snare");
     }
 }

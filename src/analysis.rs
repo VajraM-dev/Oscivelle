@@ -254,22 +254,24 @@ fn keep_spaced<T>(mut cands: Vec<T>, score: impl Fn(&T) -> f32, far: impl Fn(&T,
 
 // ------------------------------------------------------------------ kicks, tempo, beats
 
-fn detect_kicks(fr: &[Frame], fps: f64) -> Vec<Kick> {
-    let env: Vec<f32> = fr.iter().map(|f| f.kflux).collect();
-    let n = env.len();
-    let floor = 0.2 * mean(&env);
+/// Onset peaks of `env`, skipping frames where `env < ratio * other` (the other band dominates).
+/// Kicks: (kflux, hflux, 1.5). Snares/claps: (hflux, kflux, 1.0).
+fn detect_onsets(fr: &[Frame], fps: f64, env: fn(&Frame) -> f32, other: fn(&Frame) -> f32, ratio: f32) -> Vec<Kick> {
+    let e: Vec<f32> = fr.iter().map(env).collect();
+    let n = e.len();
+    let floor = 0.2 * mean(&e);
     let (half, gap) = ((0.5 * fps) as usize, (0.2 * fps) as usize);
     let mut peaks: Vec<(usize, f32)> = Vec::new();
     for i in 1..n {
-        let v = env[i];
-        if v <= floor || v <= env[i - 1] || env[i.saturating_sub(3)..(i + 4).min(n)].iter().any(|&x| x > v) {
+        let v = e[i];
+        if v <= floor || v <= e[i - 1] || e[i.saturating_sub(3)..(i + 4).min(n)].iter().any(|&x| x > v) {
             continue;
         }
-        if fr[i].kflux < 1.5 * fr[i].hflux {
-            continue; // broadband-dominated onset: snare/clap, not a kick
+        if env(&fr[i]) < ratio * other(&fr[i]) {
+            continue; // the other band dominates: not this kind of onset
         }
         // adaptive threshold: local median + 3 * MAD over ±0.5 s
-        let win = &env[i.saturating_sub(half)..(i + half).min(n)];
+        let win = &e[i.saturating_sub(half)..(i + half).min(n)];
         let med = percentile(win, 0.5);
         let dev: Vec<f32> = win.iter().map(|x| (x - med).abs()).collect();
         if v < med + 3.0 * percentile(&dev, 0.5) {
@@ -748,7 +750,8 @@ pub fn analyze(audio: &Path) -> Result<Analysis> {
     let (fps, fr) = (feat.fps(), &feat.frames);
     let duration = feat.samples as f64 / feat.rate;
 
-    let kicks = detect_kicks(fr, fps);
+    let kicks = detect_onsets(fr, fps, |f| f.kflux, |f| f.hflux, 1.5);
+    let snares = detect_onsets(fr, fps, |f| f.hflux, |f| f.kflux, 1.0);
     // full onset envelope: kick + snare/hats, each levelled separately so neither drowns the other
     let level = |get: fn(&Frame) -> f32| normalize_onsets(&fr.iter().map(get).collect::<Vec<_>>(), fps);
     let (ko, ho) = (level(|f| f.kflux), level(|f| f.hflux));
@@ -781,7 +784,7 @@ pub fn analyze(audio: &Path) -> Result<Analysis> {
     let curves = make_curves(fr, fps, duration, &bounds, &drops);
 
     Ok(Analysis {
-        version: 1,
+        version: crate::types::ANALYSIS_VERSION,
         source: audio.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         duration: r3(duration),
         bpm: (tempo.bpm * 100.0).round() / 100.0,
@@ -792,7 +795,7 @@ pub fn analyze(audio: &Path) -> Result<Analysis> {
         curves,
         drops,
         track_changes: changes,
-        snares: Vec::new(),
+        snares,
     })
 }
 
@@ -858,6 +861,22 @@ pub fn write_click_track(audio: &Path, analysis: &Analysis, out_wav: &Path) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onsets_split_kicks_from_snares() {
+        let fps = 100.0;
+        let mut fr: Vec<Frame> = (0..1000).map(|_| Frame { kflux: 0.1, hflux: 0.1, ..Default::default() }).collect();
+        for i in (50..1000).step_by(100) {
+            fr[i].kflux = 5.0;
+        }
+        for i in (100..1000).step_by(100) {
+            fr[i].hflux = 5.0;
+        }
+        let kicks = detect_onsets(&fr, fps, |f| f.kflux, |f| f.hflux, 1.5);
+        let snares = detect_onsets(&fr, fps, |f| f.hflux, |f| f.kflux, 1.0);
+        assert_eq!((kicks.len(), snares.len()), (10, 9));
+        assert!((snares[0].time - (1.0 + ONSET_LAG)).abs() < 0.011);
+    }
 
     /// 128 BPM impulse train with a 10 s gap (breakdown): tempo ≈ 128 and the beat grid
     /// keeps going through the gap.

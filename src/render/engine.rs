@@ -48,6 +48,7 @@ struct FinishUniforms {
     d1: [f32; 4],
     p0: [f32; 4], // vhs, scanlines, posterize, tint amount
     p1: [f32; 4], // tint rgb (sRGB-encoded)
+    p2: [f32; 4], // strobe, rgb split, tear, invert
 }
 
 pub struct Engine {
@@ -444,6 +445,7 @@ impl Engine {
             d1: [a.beat[1], a.beat[2], a.beat[3], a.shape[2]],
             p0: [fs.post.vhs, fs.post.scanlines, fs.post.posterize, fs.post.tint_amount],
             p1: { let t = fs.post.tint.map(srgb); [t[0], t[1], t[2], 0.0] },
+            p2: [fs.post.strobe, fs.post.rgb_split, fs.post.tear, fs.post.invert],
         };
         self.queue.write_buffer(&self.fbuf, 0, bytemuck::bytes_of(&u));
         draw(enc, target, true, &self.finish_pl, &self.finish_bg[src], 1.0);
@@ -652,7 +654,7 @@ mod tests {
         }
         let mut u = SceneUniforms::default();
         u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
-        let post = Post { vhs: 1.0, scanlines: 1.0, posterize: 1.0, tint_amount: 1.0, tint: [0.0, 1.0, 0.0], ..Default::default() };
+        let post = Post { vhs: 1.0, scanlines: 1.0, posterize: 1.0, tint_amount: 1.0, tint: [0.0, 1.0, 0.0], strobe: 1.0, rgb_split: 1.0, tear: 1.0, invert: 1.0 };
         let fs = FrameState { scene_a: lay[0].id.clone(), a: u, b: Some((lay[lay.len() - 1].id.clone(), u)), mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post };
         e.step(&fs, Some(1.0)).unwrap();
         let out = device.create_texture(&wgpu::TextureDescriptor {
