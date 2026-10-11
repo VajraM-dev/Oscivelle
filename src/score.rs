@@ -12,7 +12,7 @@ pub struct Metrics {
     pub clipped: f32,   // share of pixels near white
     pub grain: f32,     // average horizontal neighbour difference (TV-static detector)
     pub kick_sync: f32, // correlation of kick envelope with frame change
-    pub symmetry: f32,      // 1 = left-right mirror image, 0 = unrelated halves
+    pub symmetry: f32,      // 1 = mirror- or rotation-symmetric about the centre (mirrors, wedges, rings, tunnels), 0 = none (engine 2)
     pub density: f32,       // share of pixels with luma > 0.1
     pub colourfulness: f32, // Hasler–Süsstrunk, set by the judge from rgb (0 in `metrics`)
 }
@@ -40,14 +40,7 @@ pub fn metrics(frames: &[Vec<f32>], w: usize, kicks: &[f32]) -> Metrics {
     let diffs: Vec<f32> =
         frames.windows(2).map(|p| p[0].iter().zip(&p[1]).map(|(a, b)| (a - b).abs()).sum::<f32>() / px).collect();
     let motion = diffs.iter().sum::<f32>() / diffs.len().max(1) as f32;
-    let symmetry = frames
-        .iter()
-        .map(|f| {
-            let d = f.chunks(w).map(|r| (0..w / 2).map(|x| (r[x] - r[w - 1 - x]).abs()).sum::<f32>()).sum::<f32>() / (px / 2.0);
-            (1.0 - d / (2.0 * mean_of(f) + 1e-3)).clamp(0.0, 1.0)
-        })
-        .sum::<f32>()
-        / n;
+    let symmetry = frames.iter().map(|f| centred(f, w)).sum::<f32>() / n;
     let density = frames.iter().map(|f| f.iter().filter(|&&v| v > 0.1).count() as f32 / px).sum::<f32>() / n;
     Metrics {
         mean,
@@ -62,6 +55,28 @@ pub fn metrics(frames: &[Vec<f32>], w: usize, kicks: &[f32]) -> Metrics {
     }
 }
 
+/// How centred one frame is, 0..1: the best Pearson correlation of the frame with its left-right mirror or
+/// with itself turned 1/2, 1/3, 1/4 or 1/5 of a turn about the centre (inside the inscribed circle).
+// ponytail: four turns (nearest pixel); 7+ wedge counts read lower. Add turns if the picker lets them through.
+fn centred(f: &[f32], w: usize) -> f32 {
+    let h = f.len() / w.max(1);
+    let (a, b): (Vec<f32>, Vec<f32>) = f.chunks(w).flat_map(|r| (0..w).map(move |x| (r[x], r[w - 1 - x]))).unzip();
+    let mirror = pearson(&a, &b);
+    let (cx, cy, rr) = (w as f32 / 2.0, h as f32 / 2.0, h as f32 / 2.0);
+    let turn = |n: u32| {
+        let (s, c) = (std::f32::consts::TAU / n as f32).sin_cos();
+        let (a, b): (Vec<f32>, Vec<f32>) = (0..f.len())
+            .filter_map(|i| {
+                let (dx, dy) = ((i % w) as f32 + 0.5 - cx, (i / w) as f32 + 0.5 - cy);
+                let (x, y) = (cx + c * dx - s * dy, cy + s * dx + c * dy);
+                (dx * dx + dy * dy < rr * rr).then(|| (f[i], f[(y as usize).min(h - 1) * w + (x as usize).min(w - 1)]))
+            })
+            .unzip();
+        pearson(&a, &b)
+    };
+    (2..=5).map(turn).fold(mirror, f32::max).clamp(0.0, 1.0)
+}
+
 /// Hasler–Süsstrunk colourfulness of linear-ish 0..1 rgb pixels (0 = grey; ~0.3+ = vivid).
 pub fn colourfulness(px: &[[f32; 3]]) -> f32 {
     let n = px.len().max(1) as f32;
@@ -74,15 +89,17 @@ pub fn colourfulness(px: &[[f32; 3]]) -> f32 {
     (vr + vy).sqrt() + 0.3 * (mr * mr + my * my).sqrt()
 }
 
-/// Where a look sits in "look space", each 0..1: brightness, motion, symmetry, colourfulness, density, fine detail.
+/// Where a look sits in "look space", each 0..1: brightness, motion, centredness, colourfulness, density, fine detail.
 pub fn descriptor(m: &Metrics) -> [f32; 6] {
     [(m.mean / 0.5).min(1.0), (m.motion / 0.05).min(1.0), m.symmetry, (m.colourfulness / 0.4).min(1.0), m.density, (m.grain / 0.2).min(1.0)]
 }
 
-/// Quality-diversity cell (0..27): brightness × motion × colourfulness, 3 bins each.
+/// Quality-diversity cell (0..54): brightness × motion × colourfulness (3 bins each) × centred or not, so a
+/// seed-chosen cell is as likely to be off-centre as a tunnel.
+// ponytail: 0.6 is hand-set; retune from the gate's calibrate output (tunnels above, flat looks below).
 pub fn cell(d: &[f32; 6]) -> usize {
     let b = |x: f32| ((x * 3.0) as usize).min(2);
-    b(d[0]) + 3 * b(d[1]) + 9 * b(d[3])
+    b(d[0]) + 3 * b(d[1]) + 9 * b(d[3]) + 27 * usize::from(d[2] > 0.6)
 }
 
 fn pearson(a: &[f32], b: &[f32]) -> f32 {
@@ -329,7 +346,20 @@ mod tests {
         assert!(colourfulness(&[[0.5; 3]; 8]) < 1e-6);
         assert!(colourfulness(&[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]].repeat(4)) > 0.3);
         let d = descriptor(&ms);
-        assert!(d.iter().all(|x| (0.0..=1.0).contains(x)) && cell(&d) < 27);
+        assert!(d.iter().all(|x| (0.0..=1.0).contains(x)) && cell(&d) < 54);
+        // Centredness: rings about the centre score high; scattered noise and an off-centre blob score low.
+        let (w, h) = (64usize, 36usize);
+        let at = |f: &dyn Fn(f32, f32) -> f32| (0..w * h).map(|i| f((i % w) as f32 + 0.5 - 32.0, (i / w) as f32 + 0.5 - 18.0)).collect::<Vec<f32>>();
+        let rings = at(&|x, y| 0.5 + 0.5 * (0.6 * (x * x + y * y).sqrt()).sin());
+        let noise: Vec<f32> = (0..w * h).map(|i| (crate::types::mix64(i as u64) % 1000) as f32 / 1000.0).collect();
+        let blob = at(&|x, y| (-((x - 14.0).powi(2) + (y - 6.0).powi(2)) / 30.0).exp());
+        assert!(centred(&rings, w) > 0.9, "{}", centred(&rings, w));
+        assert!(centred(&noise, w) < 0.3 && centred(&blob, w) < 0.3, "{} {}", centred(&noise, w), centred(&blob, w));
+        let mut flat = d;
+        flat[2] = 0.1;
+        let mut round = d;
+        round[2] = 0.9;
+        assert_ne!(cell(&flat), cell(&round), "centredness is a cell axis");
     }
 
     /// Manual calibration: every hand-made scene should pass on real music.
@@ -342,7 +372,8 @@ mod tests {
         let scenes = crate::scenes::load_all(dir).unwrap();
         let mut j = Judge::new(&scenes, dir, false).unwrap();
         for s in &scenes {
-            println!("{:24} {:?}", s.id, j.judge(s.clone(), &a, 60.0, 4.0).unwrap());
+            let m = j.measure(s.clone(), &a, 60.0, 4.0).unwrap();
+            println!("{:24} {:?} {:.2?}", s.id, verdict(&m), descriptor(&m));
         }
     }
 }

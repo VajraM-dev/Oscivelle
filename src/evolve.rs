@@ -149,7 +149,7 @@ mod tests {
         let g = |m: &str| Genome { motion: m.into(), ..Default::default() };
         let dark = [0.1, 0.1, 0.5, 0.1, 0.5, 0.5];
         let bright = [0.9, 0.9, 0.5, 0.9, 0.5, 0.5];
-        let bright2 = [0.95, 0.95, 0.9, 0.95, 0.9, 0.9];
+        let bright2 = [0.95, 0.95, 0.55, 0.95, 0.9, 0.9];
         let pool = vec![(g("d"), dark), (g("b"), bright), (g("b2"), bright2)];
         let picks: std::collections::HashSet<String> = (0..32).map(|s| pick_v2(pool.clone(), s, &[]).unwrap().0.motion).collect();
         assert!(picks.contains("d") && picks.len() >= 2, "{picks:?}");
