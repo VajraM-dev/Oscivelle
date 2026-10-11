@@ -15,6 +15,7 @@
 - [Writing scenes](#writing-scenes)
 - [Generated scenes](#generated-scenes---generated---keep)
 - [Motion graphics](#motion-graphics---layers---image---look)
+- [Engine 2](#engine-2---engine-2)
 - [AI features](#ai-features---setup-ai---vibe---forget-ai)
 - [Writing scenes with --author](#writing-scenes-with---author)
 - [Scene blocks](#scene-blocks)
@@ -538,6 +539,39 @@ Layers put motion graphics on top of the generated scenes' feedback visuals. Eve
 visualiser.exe song.wav --replan --layers --preview 1:00 --quality draft
 visualiser.exe song.wav --replan --layers --image clouds.jpg --look vhs --preview 1:00 --quality draft
 visualiser.exe song.wav --replan --layers --look mono --preview 1:00 --quality draft
+```
+
+---
+
+## Engine 2: `--engine 2`
+
+An opt-in generator that makes every `--seed` a structurally different piece. Without AI, each retry changes the fold, motion, emitter, blend, mood and palette together.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--engine <N>` | `1`, `2` | the saved plan's value, else `1` | `2` evolves generated scenes with the engine-2 parts below. |
+
+What it adds:
+
+- **Space folds:** the plane is folded (mirrors, kaleidoscopes, hyperbolic folds) before the motion and the emitter see it, so trails and shapes inherit the symmetry.
+- **Blend modes:** how the new emission is laid onto the fading previous frame.
+- **Six moods:** `calm`, `dark`, `mono`, `sparse`, `glitch` and `maximal`. A mood sets how fast trails fade, how hard the emitter is driven and how the finish pass looks. The judge uses each mood's own brightness and motion limits, so a `dark` look isn't rejected for being dark.
+- **19 new blocks** in `sceneslocks\`: space folds, feedback operators and emitters. See [Scene blocks](#scene-blocks).
+- **Onset hits:** snares and kicks drive the visuals directly (a snare envelope, a sharp kick punch, time since the last snare), not only the smoothed kick.
+- **Drop build-ups:** the picture darkens half a bar before a drop and explodes on it.
+- **Glitch looks:** strobe, RGB split, tear and invert, on moods `glitch` and `maximal` only. They are gated on downbeats and snares.
+
+Notes:
+
+- `--generated` still sets how many segments are generated. Use `--generated 1` to make every segment engine 2.
+- The engine is saved in the plan, so a plain re-run (and a render from the saved plan) keeps using it. Changing `--engine` makes a new plan.
+- **Engine 1 is unchanged.** The default output is the same as before. New blocks, AI blocks and `--keep` scenes never alter engine-1 seeds.
+- **Re-analysis:** after upgrading, each project is analysed once again (the analysis format gained snare onsets). This applies to all runs, not just engine 2.
+- **Flash limit:** strobe and invert flashes are limited to at most one per bar, under the 3 Hz limit in WCAG.
+- `--vibe` keeps engine-1 looks.
+
+```
+visualiser.exe song.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed 3
 ```
 
 ---
