@@ -176,8 +176,9 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
     });
     // Hand-made scenes are fixed: motion graphics and pictures only apply to generated ones.
     if a.generated != Some(0.0) {
-        // Variety cuts to a new world on every drop anyway; elsewhere that comes with the motion graphics.
-        let drops = if variety { "" } else { ", a new shot at each drop" };
+        // Variety cuts to a new world on every drop anyway (except in single mode); elsewhere that comes with
+        // the motion graphics.
+        let drops = if variety && a.mode != Some(Mode::Single) { "" } else { ", a new shot at each drop" };
         a.layers = Confirm::new(&format!("Add motion graphics (backdrops, HUD, text{drops})?"))
             .with_help_message("Yes = scenery behind the visuals (sky, 3D sea world, your pictures) + HUD/text on top. No = abstract visuals only.")
             .with_default(d.layers)

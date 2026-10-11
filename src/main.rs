@@ -347,14 +347,16 @@ fn run(cli: Cli) -> Result<()> {
                 }
             };
             // Drops are hard cuts into a new shot: --layers flashes; engine 2 resets (black, then the new world
-            // rebuilds), with or without --layers. --layers also morphs into each build-up.
+            // rebuilds), with or without --layers, except in single mode (one look for the whole track).
+            // --layers also morphs into each build-up.
             let drop_cut = Transition::drop_cut(looks);
+            let drop_shots = cli.layers || (looks >= 2 && mode != Mode::Single);
             let shots: Vec<Shot> = analysis
                 .drops
                 .iter()
                 .flat_map(|d| {
                     let build = cli.layers.then_some(Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } });
-                    let drop = (cli.layers || looks >= 2).then_some(Shot { time: d.time, transition: drop_cut });
+                    let drop = drop_shots.then_some(Shot { time: d.time, transition: drop_cut });
                     build.into_iter().chain(drop)
                 })
                 .collect();
