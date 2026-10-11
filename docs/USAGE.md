@@ -538,7 +538,7 @@ Optional. Full details: [AI.md](AI.md). You bring your own **OpenAI-compatible A
 
 | Option | Description |
 |---|---|
-| `--setup-ai` | Asks for the API base URL (default `https://api.openai.com/v1`; e.g. `https://openrouter.ai/api/v1`, `http://localhost:11434/v1` for Ollama), the key (hidden as you type; leave empty for local servers that need none) and the model id. It tests them with a tiny request and stores them in **Windows Credential Manager**. The installer's "Set up AI features now" checkbox and the Start Menu "Set up AI" entry run the same thing. |
+| `--setup-ai` | Asks for the API base URL (default `https://api.openai.com/v1`; e.g. `https://openrouter.ai/api/v1`, `http://localhost:11434/v1` for Ollama), the key (hidden as you type; leave empty for local servers that need none) the model id and, optionally, an image model id (e.g. `gpt-image-1`, OpenAI image models only; leave empty for no AI pictures). It tests the model with a tiny request (not the image model, which costs money) and stores them in **Windows Credential Manager**. The installer's "Set up AI features now" checkbox and the Start Menu "Set up AI" entry run the same thing. |
 | `--vibe "<TEXT>"` | Describe the visuals in your own words, for example `--vibe "dark and liquid, slow"`. The AI tunes the blocks' settings to the vibe, picks looks that the generated scenes then evolve from (still scored on your music), and writes new shader blocks when the library can't express what you asked for. If the share of generated scenes would be 0, `--vibe` makes it 1, since a vibe only steers generated scenes. |
 | `--forget-ai` | Removes the stored settings. Uninstalling does this too. |
 
@@ -549,6 +549,7 @@ Optional. Full details: [AI.md](AI.md). You bring your own **OpenAI-compatible A
 | `VISUALISER_AI_MODEL` | The model id. Required for the env-var setup; on its own it overrides the stored model. |
 | `OPENAI_API_KEY` | The key. |
 | `OPENAI_BASE_URL` | The base URL (default `https://api.openai.com/v1`). |
+| `VISUALISER_IMAGE_MODEL` | The image model id. Overrides a stored one. |
 
 With nothing stored, the env vars are used when `VISUALISER_AI_MODEL` is set together with `OPENAI_API_KEY` or `OPENAI_BASE_URL`.
 

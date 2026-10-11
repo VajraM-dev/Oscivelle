@@ -6,6 +6,9 @@ Optional. Everything else in `visualiser` works without them. For the short vers
 - [Provider setup](#provider-setup)
 - [How requests work](#how-requests-work)
 - [The vibe pipeline](#the-vibe-pipeline)
+- [Pictures (image model)](#pictures-image-model)
+- [Storyboard](#storyboard)
+- [Layers in looks](#layers-in-looks)
 - [Example: "clouds, atmos"](#example-clouds-atmos)
 - [Cost and limits](#cost-and-limits)
 - [--author](#--author-dev-tool)
@@ -35,13 +38,14 @@ The model must support structured output or tool calling. Most current models do
 
 ### `--setup-ai`
 
-Prompts for three things:
+Prompts for four things:
 
 | Prompt | Notes |
 |---|---|
 | API base URL | Default `https://api.openai.com/v1`. Must start with `http://` or `https://`. You may paste the full `.../chat/completions` URL too. |
 | API key | Hidden as you type. Press Enter for none (local servers). |
 | Model id | Required. |
+| Image model id | Optional, Enter skips. OpenAI image models only (e.g. `gpt-image-1`). See [Pictures](#pictures-image-model). Not test-called, since it costs money. |
 
 It then makes a test call through the same structured-output path the real features use, so a model that can't do structured output or tool calling fails here, not mid-render. On success it saves the settings to Windows Credential Manager (service `visualiser`, account `ai`). The key is sent only to that service. It is never printed or written to project files.
 
@@ -67,6 +71,7 @@ Used only when nothing is stored.
 | `VISUALISER_AI_MODEL` | Model id. Required for the env setup. **Always overrides the model**, including a stored one. |
 | `OPENAI_API_KEY` | Key. |
 | `OPENAI_BASE_URL` | Base URL, default `https://api.openai.com/v1`. |
+| `VISUALISER_IMAGE_MODEL` | Image model id. Overrides a stored one too. |
 
 The env setup is active when `VISUALISER_AI_MODEL` is set together with `OPENAI_API_KEY` or `OPENAI_BASE_URL`. If a key or URL is set without a model, the program warns and ignores them. Stored settings win over env vars, and are never mixed with them: a global `OPENAI_API_KEY` can't redirect a stored Ollama setup.
 
@@ -148,6 +153,46 @@ If the plan itself is reused (same seed, mode, generated share and vibe), the vi
 
 ---
 
+## Pictures (image model)
+
+Optional. A look can show a picture (a plate) through the `back_plate` and `back_sprite` backdrops. With an image model set, the design call may ask for up to 4 new pictures, each a prompt plus a `sprite` flag: `false` for a full-frame picture (sky, landscape, texture), `true` for one object cut out on a transparent background.
+
+- **Set it** in `--setup-ai` (the image-model prompt; Enter skips) or with `VISUALISER_IMAGE_MODEL`, which overrides a stored one. Only OpenAI image models (`gpt-image-1`) are supported. The request goes to `<base URL>/images/generations` of the same service, 1536x1024, medium quality, PNG.
+- **Your pictures:** `--image` files given with `--vibe` are shown to the AI as plates `0..n-1` (it can't see them; the prompt says to make them the heroes). Its own pictures come after yours. Total plates stay at 8 or fewer, so it may ask for `min(4, 8 - yours)`.
+- **Only pictures a look uses are painted.** They are painted in parallel, and each is cached by prompt in `plates\` in the [data folder](#where-files-live). A re-run with the same vibe finds them and paints nothing.
+- **A failed picture only drops that picture.** A warning is printed and the looks that used it go without a plate. The rest of the vibe is kept.
+- **No image model set:** the AI is told picture generation isn't available and requests none. The vibe works as before, with `--image` pictures only.
+- `--setup-ai` does not test-call the image model, since each call costs money. The first picture request tests it.
+
+---
+
+## Storyboard
+
+The design call also gets a list of up to 60 candidate moments (the start, each drop's build-up and drop, and phrase starts spread over the song), each with its time, energy and tension. It may return up to 8 shots: a moment, one of its looks and a transition (`cut`, `flash` or `morph`).
+
+- Shots the AI numbers wrongly (unknown moment, or a look that was dropped) are discarded.
+- With shots, every segment takes its look from the storyboard, as designed: the shot nearest the segment start (within 2 bars), else the last shot before it. There is no evolution and no curated scene, so the generated share is forced to 1. The shots are saved in the plan.
+- No shots (`[]`) means one look that evolves, as in [How evolution stays on-vibe](#5-how-evolution-stays-on-vibe).
+- **`--reroll` on a storyboarded segment returns the same look.** Known limitation: the storyboard ignores the reroll seed. Change the vibe text to get a new design.
+
+---
+
+## Layers in looks
+
+A look can also carry the [motion layers](USAGE.md#motion-graphics---layers---image---look):
+
+| Field | Meaning |
+|---|---|
+| `backdrop`, `overlay` | A backdrop block (behind the visuals) and an overlay block (on top, not smeared), or `""` for none. A look naming an unknown block is dropped. |
+| `plate` | Which picture the backdrop shows, or -1. A plate that doesn't exist is dropped. |
+| `feedback` | 0 to 1.5: how strongly the feedback glows over the backdrop (clamped). |
+| `text` | Short text for overlays that draw it. |
+| `post` | Finishing look: `vhs`, `scanlines`, `posterize` (0 to 1), and `tint_amount` (0 to 1) towards `tint` for mono looks. All 0 means clean. |
+
+New blocks can be of kind `backdrop` or `overlay` too, written, test-rendered and judged like the others. Without `--layers`, a vibe's layers still apply: they come from the look.
+
+---
+
 ## Example: "clouds, atmos"
 
 **First attempt (earlier design).** The result was a kaleidoscope plus Lissajous scene, not clouds. Causes:
@@ -175,6 +220,7 @@ The result was soft clouds.
 - **Calls per new vibe:** 1 design call, plus up to 3 per new block, with up to 3 new blocks. That is at most 10 calls. A cached vibe makes none.
 - **The judge can reject very soft visuals.** The thresholds are hand-set (average brightness 0.04 to 0.75, contrast at least 0.04, frame-to-frame motion 0.002 to 0.25, at most 25% clipped pixels, grain at most 0.2). A very faint, slow vibe can be rejected as "too dark" or "static". Rejected attempts cost a call each.
 - **One-look vibes give little variety.** Evolution only uses the looks' blocks, so a single look means every segment uses the same blocks and palette. Only tuned-param nudges differ. Ask for a broader vibe if you want variety.
+- **Pictures cost money.** A few cents each, at most 4 per new vibe, and only the ones a look actually uses. They are painted in parallel and cached per prompt in `plates\`, so re-running the same vibe repaints nothing. A new vibe text paints again.
 - **AI-written blocks live in `scenes\blocks\`.** To remove one, delete its `.wgsl` and `.toml`. They are not committed to git by default; add them yourself if you want to keep them.
 - **AI trouble never fails a render.** No service set up, a failed call, or an unusable answer prints a warning and the scenes are evolved without the vibe.
 
@@ -200,6 +246,7 @@ Videos go next to the audio. Everything else goes to the per-track data folder `
 |---|---|
 | `vibe.json` (data folder) | The cached vibe answer. |
 | `plan.json` (data folder) | The plan, including each generated segment's recipe. |
+| `plates\` (data folder) | The AI's pictures, cached per prompt. |
 | `gen\` (data folder) | Generated scene shaders. |
 | `scenes\blocks\*.wgsl`, `*.toml` | New AI-written blocks. |
 | `scenes\<id>.wgsl`, `.toml` | `--author` output. |
@@ -223,5 +270,8 @@ Uninstalling always forgets the stored AI settings. It also asks whether to dele
 | `AI reply had no tool call` | The model answered in plain text with no JSON. Use a model that supports tool calling or structured output. |
 | `new block ... failed ...; dropping the looks that use it` | The block failed 3 attempts (compile error or judge rejection). Run again, use a stronger model, or reword the vibe. |
 | `the AI gave no usable looks` | None of the looks named existing blocks. Try again or reword. |
+| `warning: vibe: picture failed (...)` | The image request failed (wrong image model id, no access, or an endpoint that isn't OpenAI-compatible: other image APIs are unsupported). Only that picture is dropped; the looks using it go without. Fix the model with `--setup-ai`. |
+| No pictures in the video | No image model set, so the AI requested none. Set one in `--setup-ai`. The vibe works fine without. |
+| Same look again after `--reroll` | The segment is storyboarded; see [Storyboard](#storyboard). |
 | Very slow or timeout (600 s) | Slow local model. Use a smaller or faster one. Block and scene writing request up to 8000 tokens. |
 | Visuals don't match the note | The note describes intent. See the colour gap in the [example](#example-clouds-atmos). Reword the vibe (a new text asks the AI again). |
