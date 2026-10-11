@@ -30,6 +30,8 @@ pub struct PlanRequest<'a> {
     pub shots: &'a [Shot],
     /// Visual engine (Plan.engine).
     pub engine: u32,
+    /// Auto-pick pool (Plan.pool).
+    pub pool: Pool,
 }
 
 // ---------------------------------------------------------------- rng
@@ -65,9 +67,9 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     if req.scenes.is_empty() {
         bail!("no scenes");
     }
-    // Auto picks come from the shipped scenes only; a library without them (tests) uses all.
+    // Auto picks come from the shipped scenes only (unless --pool all); a library without them (tests) uses all.
     let builtin: Vec<Scene> = req.scenes.iter().filter(|s| crate::scenes::is_builtin(&s.id)).cloned().collect();
-    let pool: &[Scene] = if builtin.is_empty() { req.scenes } else { &builtin };
+    let pool: &[Scene] = if builtin.is_empty() || req.pool == Pool::All { req.scenes } else { &builtin };
     let bar = bar_len(a);
     let near_drop = |t: f64| a.drops.iter().any(|d| (d.time - t).abs() <= bar);
     let known = |id: &Option<String>| match id {
@@ -187,7 +189,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         .iter()
         .map(|b| req.previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
         .collect();
-    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine));
+    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine, req.pool));
     let locked = |i: usize| prev[i].filter(|s| s.locked);
     let kept = |i: usize| prev[i].filter(|_| same_plan);
     // Source name mixed in so different files get different takes at the same seed.
@@ -295,7 +297,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             t.duration = t.duration.min(span);
         }
     }
-    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false, engine: req.engine })
+    Ok(Plan { version: 1, source: a.source.clone(), seed: req.seed, mode: req.mode, generated: req.generated, vibe: req.vibe.map(str::to_string), segments, plates: vec![], post: None, layers: false, engine: req.engine, pool: req.pool })
 }
 
 /// Avoid `soft` if anything is left, else avoid `hard`, else anything.
@@ -686,6 +688,7 @@ mod tests {
             gen_dir: Path::new("."),
             shots: &[],
             engine: 1,
+            pool: Default::default(),
         };
         let p1 = plan(&req(&[])).unwrap();
         let p2 = plan(&req(&[])).unwrap();
@@ -737,7 +740,7 @@ mod tests {
                 crate::scenes::ParamRange { name: String::new(), min: 2.0, max: 4.0, fixed: false },
             ];
         }
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1 };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1, pool: Pool::Builtin };
         let p = plan(&req).unwrap();
         assert!(p.segments.iter().all(|s| !s.mods.is_empty() && s.mods.iter().all(|m| m.param == 1)));
         let mut flat = p.clone();
@@ -787,6 +790,7 @@ mod tests {
             gen_dir: Path::new("."),
             shots: &shots,
             engine: 1,
+            pool: Default::default(),
         };
         let p = plan(&req).unwrap();
         assert_eq!(p.segments.len(), 2);
@@ -832,6 +836,7 @@ mod tests {
             gen_dir: Path::new("."),
             shots: &[],
             engine: 1,
+            pool: Default::default(),
         };
         let p = plan(&req(&[])).unwrap();
         for s in &p.segments {
@@ -848,12 +853,26 @@ mod tests {
         assert!(p3.segments.iter().all(|s| s.genome.is_none() && s.scene == "s1"));
     }
 
+    /// Kept/authored scenes are auto-picked only with --pool all.
+    #[test]
+    fn pool_all_admits_non_builtin_scenes() {
+        let a = test_analysis();
+        let mut scenes = test_scenes();
+        scenes[0].id = "fractal_zoom".into();
+        scenes[1].id = "ink_in_water".into();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1, pool: Pool::Builtin };
+        assert!(plan(&req).unwrap().segments.iter().all(|s| crate::scenes::is_builtin(&s.scene)));
+        let all = plan(&PlanRequest { pool: Pool::All, ..req }).unwrap();
+        assert!(all.segments.iter().any(|s| !crate::scenes::is_builtin(&s.scene)));
+        assert!(serde_json::to_string(&all).unwrap().contains("\"pool\":\"all\""));
+    }
+
     /// Engine 1 must never change: plan JSON and per-frame uniforms (captured before engine 2 work).
     #[test]
     fn engine1_plan_and_frames_are_frozen() {
         let a = test_analysis();
         let scenes = test_scenes();
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1 };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 1, pool: Pool::Builtin };
         let p = plan(&req).unwrap();
         let mut s = serde_json::to_string(&p).unwrap();
         for t in [0.3, 10.0, 63.9, 64.05, 96.0, 300.0] {
@@ -873,7 +892,7 @@ mod tests {
         let mut a = test_analysis();
         a.snares = vec![Kick { time: 31.0, strength: 1.0 }];
         let scenes = test_scenes();
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 2 };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
         let mut p = plan(&req).unwrap();
         let f = frame_state(&p, &a, &scenes, 31.02, 64, 64, Quality::Draft);
         assert!(f.a.hits[0] > 0.7 && (f.a.hits[2] - 0.02).abs() < 1e-3, "{:?}", f.a.hits);

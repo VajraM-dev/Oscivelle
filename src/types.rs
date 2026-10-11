@@ -142,6 +142,17 @@ pub enum Mode {
     Markers,
 }
 
+/// Which scenes Auto/Single/reroll pick from on their own (--pool).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Pool {
+    /// The shipped scenes only, so a seed never changes when scenes are added.
+    #[default]
+    Builtin,
+    /// Every loaded scene, --keep and --author ones included.
+    All,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Quality {
     Draft,
@@ -176,8 +187,14 @@ pub struct Plan {
     /// Visual engine (--engine): 1 = the original looks, 2 = space folds, blends, moods, new blocks, onset hits.
     #[serde(default = "engine_v1", skip_serializing_if = "is_engine_v1")]
     pub engine: u32,
+    /// Auto-pick pool (--pool).
+    #[serde(default, skip_serializing_if = "is_builtin_pool")]
+    pub pool: Pool,
 }
 
+fn is_builtin_pool(p: &Pool) -> bool {
+    *p == Pool::Builtin
+}
 fn engine_v1() -> u32 {
     1
 }
@@ -187,8 +204,8 @@ fn is_engine_v1(e: &u32) -> bool {
 
 impl Plan {
     /// Made with these settings (its unlocked segments still apply).
-    pub fn same_inputs(&self, seed: u64, mode: Mode, generated: f32, vibe: Option<&str>, engine: u32) -> bool {
-        self.seed == seed && self.mode == mode && self.generated == generated && self.vibe.as_deref() == vibe && self.engine == engine
+    pub fn same_inputs(&self, seed: u64, mode: Mode, generated: f32, vibe: Option<&str>, engine: u32, pool: Pool) -> bool {
+        self.seed == seed && self.mode == mode && self.generated == generated && self.vibe.as_deref() == vibe && self.engine == engine && self.pool == pool
     }
 }
 

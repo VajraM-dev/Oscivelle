@@ -104,6 +104,10 @@ struct Cli {
     /// and drop build-ups (every seed a different piece). Default: the saved plan's, else 1.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=2))]
     engine: Option<u32>,
+    /// Scenes the director picks on its own: builtin = the shipped ones (stable seeds), all = also --keep and
+    /// --author scenes. Default: the saved plan's, else builtin.
+    #[arg(long, value_enum)]
+    pool: Option<Pool>,
     /// Set up an OpenAI-compatible AI service (URL, key, model) for the AI features.
     #[arg(long)]
     setup_ai: bool,
@@ -199,6 +203,7 @@ fn run(cli: Cli) -> Result<()> {
     let plan_path = data.join("plan.json");
     let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
     let engine = cli.engine.or(previous.as_ref().map(|p| p.engine)).unwrap_or(1);
+    let pool = cli.pool.or(previous.as_ref().map(|p| p.pool)).unwrap_or_default();
     // Older analyses (no snares) are redone once.
     let analysis = load_or_analyse(&audio, &data, cli.reanalyse)?;
 
@@ -248,7 +253,7 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref(), engine))
+        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref(), engine, pool))
         && previous.as_ref().is_some_and(|p| {
             p.layers == cli.layers && p.plates.starts_with(&user_plates) && p.plates[user_plates.len()..].iter().all(|q| q.starts_with(&ai_plates))
         });
@@ -385,6 +390,7 @@ fn run(cli: Cli) -> Result<()> {
                 gen_dir: &gen_dir,
                 shots: &shots,
                 engine,
+                pool,
             })?;
             plan.plates = plates.clone();
             plan.layers = cli.layers;

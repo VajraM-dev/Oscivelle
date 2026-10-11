@@ -220,6 +220,7 @@ impl Judge {
             post: None,
             layers: false,
             engine: 1,
+            pool: Default::default(),
             segments: vec![Segment {
                 start: 0.0,
                 end: analysis.duration,

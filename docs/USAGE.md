@@ -179,7 +179,7 @@ To keep a segment you like, set `"locked": true` on it in the plan file. See [Ed
 | `--replan` | Ignores the saved plan's **unlocked** segments and plans again from the analysis. Locked segments are kept. |
 | `--plan-only` | Stops after writing the analysis, plan and chapters. Doesn't render. Use it to inspect or edit the plan first. |
 
-**When is the saved plan reused?** When all of these are true: the seed and mode match the saved plan, and none of `--markers`, `--reroll`, `--replan`, `--reanalyse` or `--scene` are given. Otherwise a new plan is made. Locked segments always carry over.
+**When is the saved plan reused?** When all of these are true: the seed, mode and `--pool` match the saved plan, and none of `--markers`, `--reroll`, `--replan`, `--reanalyse` or `--scene` are given. Otherwise a new plan is made. Locked segments always carry over.
 
 ### Developer tools
 
@@ -516,6 +516,8 @@ visualiser.exe set.flac --keep 3
 ```
 The scene is written to `scenes\gen_<id>.wgsl` and `.toml`. After that it is a normal hand-editable scene (see [Writing scenes](#writing-scenes)) you can use with `--scene`, `@scene_id` or in the plan.
 
+**Auto picks stay on the shipped scenes.** The director only picks the 7 hand-made scenes on its own (Auto, Single and `--reroll`), so a seed gives the same video however many scenes you keep or author. Kept and `--author` scenes are reachable by name (`--scene`, `@scene_id`, the plan). To let the director pick them too, add `--pool all`; this changes which scenes your seeds pick, is saved in the plan (a plain re-run keeps it) and `--pool builtin` switches back.
+
 **Known limit:** scoring runs on your GPU, so a different GPU may pick a different scene when it plans again. A saved plan always renders the same.
 
 ---
@@ -622,6 +624,7 @@ visualiser.exe track.wav --author "slow aurora curtains that flare on the kick"
   visualiser.exe track.wav --dev --scene <id>
   ```
 - Nothing is rendered. If you don't like the result, delete the two files.
+- Like `--keep` scenes, it is only auto-picked with `--pool all` (see [Generated scenes](#generated-scenes---generated---keep)).
 - With no key set up, or after 3 failed tries, it stops with an error.
 
 ---
