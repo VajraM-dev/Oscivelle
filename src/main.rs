@@ -133,11 +133,30 @@ fn main() {
 
 fn guided() -> Result<()> {
     use inquire::InquireError::{OperationCanceled, OperationInterrupted};
-    let answers = match wizard::ask() {
+    let asked = || -> Result<Option<wizard::Answers>> {
+        let mut a = wizard::ask(None)?;
+        // Live preview, then a menu, until something renders or the user quits.
+        while a.start.is_some() {
+            println!("\x1b[2mPreview window keys: Space pause, R restart, D debug overlay, Esc close.\x1b[0m");
+            // A child process: winit allows only one event loop per process, and the user may preview again.
+            match std::process::Command::new(std::env::current_exe()?).args(wizard::to_args(&a)).status() {
+                Ok(s) if s.success() => {}
+                Ok(s) => eprintln!("preview failed ({s})"),
+                Err(e) => eprintln!("preview failed: {e}"),
+            }
+            match wizard::after_preview(&a)? {
+                Some(next) => a = next,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(a))
+    };
+    let answers = match asked() {
         // Esc / Ctrl-C: the user quit, not an error.
         Err(e) if matches!(e.downcast_ref(), Some(OperationCanceled | OperationInterrupted)) => return Ok(()),
         r => r?,
     };
+    let Some(answers) = answers else { return Ok(()) };
     let args = wizard::to_args(&answers);
     println!("\nSame thing as a command, for next time:\n  {}\n", wizard::command_line(&args));
     run(Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args))?)

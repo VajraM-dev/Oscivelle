@@ -46,7 +46,15 @@ That runs with all defaults: Auto mode, final quality, 1080p at 30 fps, seed 1, 
 
 ## Guided mode
 
-Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, motion graphics, who designs the visuals (core engine or AI), your own pictures, the finishing look, full video or a 30-second test, resolution, and optionally seed, film grain and (with a tracklist) titles. It then prints the equivalent command line, so you can copy it for next time, and renders.
+Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, motion graphics, who designs the visuals (core engine or AI), your own pictures, the finishing look, what to make (live preview, full video or a 30-second test file), resolution, and optionally seed, film grain and (with a tracklist) titles. It then prints the equivalent command line, so you can copy it for next time, and renders.
+
+- **Live preview in a window** (the first choice) asks a start time (default 1:00) and opens the [preview window](#preview-window---dev) at draft quality (`--dev --start <time> --quality draft`). Nothing is saved except the plan. Keys: `Space` pause, `R` restart, `D` debug overlay, `Esc` close. When the window closes, a menu offers:
+  - **Render the full video with these settings**: asks the resolution, then renders. It reuses the previewed plan (same seed and settings), so the video matches what you saw and the AI vibe isn't paid for again.
+  - **Render a 30-second test file**: a draft `--preview` file from the same start time.
+  - **Try another take (new seed)**: adds 1 to the seed, shows it, and previews again. The vibe is cached, so a new take costs no AI credit.
+  - **Change settings**: asks the questions again with your previous answers selected (the audio file is kept unless you choose another), then previews again, or renders if you pick full video or a test file.
+  - **Quit** (or `Esc`).
+- Choosing **Full video** or **Quick 30-second test file** directly renders straight away, with no menu.
 
 - **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
 - **Motion graphics** (generated styles only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only.
