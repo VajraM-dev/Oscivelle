@@ -111,21 +111,36 @@ pub fn ask() -> Result<Answers> {
         2 => Some(1.0),
         _ => None,
     };
-    // Hand-made only has nothing for a vibe to steer.
+    // Hand-made scenes are fixed: motion graphics, AI and pictures only apply to generated ones.
     if a.generated != Some(0.0) {
-        if llm::load().is_some() {
-            let t = Text::new("Describe the vibe in your own words (Enter to skip):")
-                .with_help_message("e.g. clouds and haze, molten gold, rainy neon city. New visuals are written when nothing fits.")
-                .prompt()?;
-            a.vibe = Some(t.trim().to_string()).filter(|t| !t.is_empty());
-        } else {
-            println!("\x1b[2mTip: run \"visualiser --setup-ai\" to describe visuals in words.\x1b[0m");
-        }
         a.layers = Confirm::new("Add motion graphics (backdrops, HUD, text, a new shot at each drop)?")
             .with_help_message("Yes = scenery behind the visuals (sky, 3D sea world, your pictures) + HUD/text on top. No = abstract visuals only.")
             .with_default(false)
             .prompt()?;
-        if a.layers && Confirm::new("Show your own pictures in the video?").with_help_message("Shown as backdrops (full-frame photo) or floating cut-outs (transparent PNG). Up to 8.").with_default(false).prompt()? {
+
+        if let Some(ai) = llm::load() {
+            let paints = if ai.image_model.is_empty() { "" } else { ", more if it paints pictures" };
+            let who = vec![
+                "Core engine only (free, works offline)".to_string(),
+                format!("Let AI design it from a description (uses your AI credit: a few cents{paints})"),
+            ];
+            if Select::new("Who designs the visuals?", who).raw_prompt()?.index == 1 {
+                let t = Text::new("Describe the vibe in your own words:")
+                    .with_help_message("e.g. clouds and haze, molten gold, rainy neon city. New visuals are written when nothing fits.")
+                    .with_validator(|s: &str| Ok(if s.trim().is_empty() { Validation::Invalid("type a few words, or Esc to quit".into()) } else { Validation::Valid }))
+                    .prompt()?;
+                a.vibe = Some(t.trim().to_string());
+            }
+        } else {
+            println!("\x1b[2mTip: run \"visualiser --setup-ai\" to let AI design visuals from a description.\x1b[0m");
+        }
+
+        if (a.layers || a.vibe.is_some())
+            && Confirm::new("Show your own pictures in the video?")
+                .with_help_message("Shown as backdrops (full-frame photo) or floating cut-outs (transparent PNG). Up to 8.")
+                .with_default(false)
+                .prompt()?
+        {
             a.images = pick_many("Choose pictures", &["png", "jpg", "jpeg"])?;
         }
     }
@@ -157,10 +172,14 @@ pub fn ask() -> Result<Answers> {
         };
     }
 
-    if Confirm::new("Change advanced options (seed, titles, film grain)?").with_default(false).prompt()? {
+    // Titles come from the tracklist, so only offer them when there is one.
+    let advanced = if a.markers.is_some() { "Change advanced options (seed, titles, film grain)?" } else { "Change advanced options (seed, film grain)?" };
+    if Confirm::new(advanced).with_default(false).prompt()? {
         let seed = CustomType::<u64>::new("Seed (same seed = same video; another number = a new take):").with_default(1).prompt()?;
         a.seed = (seed != 1).then_some(seed);
-        a.no_titles = !Confirm::new("Show track titles?").with_default(true).prompt()?;
+        if a.markers.is_some() {
+            a.no_titles = !Confirm::new("Show track titles?").with_default(true).prompt()?;
+        }
         a.no_grain = !Confirm::new("Add film grain?").with_default(true).prompt()?;
     }
     Ok(a)

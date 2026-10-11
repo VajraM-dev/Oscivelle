@@ -46,10 +46,12 @@ That runs with all defaults: Auto mode, final quality, 1080p at 30 fps, seed 1, 
 
 ## Guided mode
 
-Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, an optional vibe, full video or a 30-second test, resolution, and optionally seed, titles and film grain. It then prints the equivalent command line, so you can copy it for next time, and renders.
+Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, motion graphics, who designs the visuals (core engine or AI), your own pictures, the finishing look, full video or a 30-second test, resolution, and optionally seed, film grain and (with a tracklist) titles. It then prints the equivalent command line, so you can copy it for next time, and renders.
 
 - **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
-- **Describe the vibe** is asked after the style, only when the style includes generated scenes and an AI service is set up. Type a few words or press Enter to skip. Without one it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
+- **Motion graphics** (generated styles only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only.
+- **Who designs the visuals** is asked only when an AI service is set up. "Core engine only" is free and works offline. "Let AI design it" asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. Without an AI service it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
+- **Your own pictures** is asked after motion graphics or an AI description: pick PNG/JPG files (`--image`, up to 8). Full-frame photos become backdrops, transparent PNGs float as cut-outs.
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
 - `Esc` quits at any question.
