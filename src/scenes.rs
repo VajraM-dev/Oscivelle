@@ -54,12 +54,27 @@ pub fn prelude_path(dir: &Path) -> PathBuf {
     dir.join("_prelude.wgsl")
 }
 
+/// `<id>.layers.wgsl` next to the scene: its layer pass (backdrop + feedback + overlay), run once per output frame.
+pub fn layers_path(scene: &Scene) -> PathBuf {
+    scene.wgsl_path.with_extension("layers.wgsl")
+}
+
+fn source(dir: &Path, path: &Path) -> Result<String> {
+    let prelude = std::fs::read_to_string(prelude_path(dir)).context("reading _prelude.wgsl")?;
+    let body = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(format!("{}{prelude}
+{body}", include_str!("render/common.wgsl")))
+}
+
 /// Full shader source for a scene: render/common.wgsl + prelude + scene file (re-read from disk each call, for hot reload).
 pub fn shader_source(dir: &Path, scene: &Scene) -> Result<String> {
-    let prelude = std::fs::read_to_string(prelude_path(dir)).context("reading _prelude.wgsl")?;
-    let body = std::fs::read_to_string(&scene.wgsl_path)
-        .with_context(|| format!("reading {}", scene.wgsl_path.display()))?;
-    Ok(format!("{}{prelude}\n{body}", include_str!("render/common.wgsl")))
+    source(dir, &scene.wgsl_path)
+}
+
+/// Full source of the scene's layer pass; None when it has none.
+pub fn layers_source(dir: &Path, scene: &Scene) -> Option<Result<String>> {
+    let path = layers_path(scene);
+    path.exists().then(|| source(dir, &path))
 }
 
 /// Loads every <id>.toml with a matching <id>.wgsl, sorted by id.
@@ -77,8 +92,8 @@ pub fn load_all(dir: &Path) -> Result<Vec<Scene>> {
         let id = path.file_stem().unwrap().to_string_lossy().into_owned();
         let t: SceneToml = toml::from_str(&std::fs::read_to_string(&path)?)
             .with_context(|| format!("parsing {}", path.display()))?;
-        if t.params.len() > 8 {
-            bail!("{id}: at most 8 params");
+        if t.params.len() > crate::types::MAX_PARAMS {
+            bail!("{id}: at most {} params", crate::types::MAX_PARAMS);
         }
         if t.palettes.is_empty() {
             bail!("{id}: needs at least one palette");

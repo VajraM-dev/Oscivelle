@@ -46,6 +46,8 @@ struct FinishUniforms {
     r: [f32; 4],
     d0: [f32; 4],
     d1: [f32; 4],
+    p0: [f32; 4], // vhs, scanlines, posterize, tint amount
+    p1: [f32; 4], // tint rgb (linear)
 }
 
 pub struct Engine {
@@ -77,7 +79,22 @@ pub struct Engine {
     accum_bg: wgpu::BindGroup,
     bloom_bg: Vec<wgpu::BindGroup>,
     fbuf: wgpu::Buffer,
-    finish_bg: wgpu::BindGroup,
+    /// [accum, comp]
+    finish_bg: [wgpu::BindGroup; 2],
+    scene_bgl: wgpu::BindGroupLayout,
+    mirror: wgpu::Sampler,
+    clamp: wgpu::Sampler,
+    /// The plan's pictures (texture array); one transparent texel when there are none.
+    plates: wgpu::TextureView,
+    /// Uniforms of the layer pass, [a/b].
+    lbuf: [wgpu::Buffer; 2],
+    /// Layer pass output (sim size, HDR); bloom + finish read it instead of `accum` when used.
+    comp: wgpu::TextureView,
+    comp_bg: wgpu::BindGroup,
+    /// [uniforms a/b], source = accum.
+    layer_bg: [wgpu::BindGroup; 2],
+    /// Run layer passes (the judge turns this off: it scores the feedback, not the backdrop).
+    pub layers: bool,
 }
 
 impl Engine {
@@ -114,6 +131,7 @@ impl Engine {
         let fb = [tex(sim.0, sim.1), tex(sim.0, sim.1)];
         let scratch = tex(sim.0, sim.1);
         let accum = tex(sim.0, sim.1);
+        let comp = tex(sim.0, sim.1);
         let levels = if final_q { 5 } else { 3 };
         let bloom: Vec<_> = (1..=levels).map(|i| tex(sim.0 >> i, sim.1 >> i)).collect();
 
@@ -151,6 +169,16 @@ impl Engine {
             },
             count: None,
         };
+        let arr_e = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: frag,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        };
         let samp_e = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: frag,
@@ -160,7 +188,7 @@ impl Engine {
         let bgl = |entries: &[wgpu::BindGroupLayoutEntry]| {
             d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries })
         };
-        let scene_bgl = bgl(&[uniform_e(0), tex_e(1), samp_e(2)]);
+        let scene_bgl = bgl(&[uniform_e(0), tex_e(1), samp_e(2), arr_e(3), samp_e(4)]);
         let tex_bgl = bgl(&[tex_e(0), samp_e(1)]);
         let finish_bgl = bgl(&[uniform_e(0), tex_e(1), tex_e(2), samp_e(3)]);
         let layout = |l: &wgpu::BindGroupLayout| {
@@ -183,7 +211,9 @@ impl Engine {
             })
         };
         let ubuf = [buf(size_of::<SceneUniforms>()), buf(size_of::<SceneUniforms>())];
+        let lbuf = [buf(size_of::<SceneUniforms>()), buf(size_of::<SceneUniforms>())];
         let fbuf = buf(size_of::<FinishUniforms>());
+        let plates = plate_array(d, queue, &[]);
 
         let bg = |l: &wgpu::BindGroupLayout, res: &[wgpu::BindingResource]| {
             let entries: Vec<_> = res
@@ -194,18 +224,17 @@ impl Engine {
             d.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &entries })
         };
         use wgpu::BindingResource as R;
-        let scene_bg = [0, 1].map(|u| {
-            [0, 1].map(|f| bg(&scene_bgl, &[ubuf[u].as_entire_binding(), R::TextureView(&fb[f]), R::Sampler(&mirror)]))
-        });
+        let scene_bg = [0, 1].map(|u| [0, 1].map(|f| scene_bind(d, &scene_bgl, &ubuf[u], &fb[f], &mirror, &plates, &clamp)));
+        let layer_bg = [0, 1].map(|u| scene_bind(d, &scene_bgl, &lbuf[u], &accum, &mirror, &plates, &clamp));
         let tex_bg = |v: &wgpu::TextureView| bg(&tex_bgl, &[R::TextureView(v), R::Sampler(&clamp)]);
         let fb_bg = [tex_bg(&fb[0]), tex_bg(&fb[1])];
         let scratch_bg = tex_bg(&scratch);
         let accum_bg = tex_bg(&accum);
+        let comp_bg = tex_bg(&comp);
         let bloom_bg = bloom.iter().map(tex_bg).collect();
-        let finish_bg = bg(
-            &finish_bgl,
-            &[fbuf.as_entire_binding(), R::TextureView(&accum), R::TextureView(&bloom[0]), R::Sampler(&clamp)],
-        );
+        let finish_bg = [&accum, &comp].map(|src| {
+            bg(&finish_bgl, &[fbuf.as_entire_binding(), R::TextureView(src), R::TextureView(&bloom[0]), R::Sampler(&clamp)])
+        });
 
         let post = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post"),
@@ -215,9 +244,9 @@ impl Engine {
             label: Some("finish"),
             source: wgpu::ShaderSource::Wgsl(FINISH_WGSL.into()),
         });
-        let comp = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
-        let constant = comp(wgpu::BlendFactor::Constant, wgpu::BlendFactor::OneMinusConstant);
-        let add = comp(wgpu::BlendFactor::One, wgpu::BlendFactor::One);
+        let blend = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
+        let constant = blend(wgpu::BlendFactor::Constant, wgpu::BlendFactor::OneMinusConstant);
+        let add = blend(wgpu::BlendFactor::One, wgpu::BlendFactor::One);
         let copy_pl = pipeline(d, &post, &tex_layout, "fs_copy", HDR, Some(wgpu::BlendState { color: constant, alpha: constant }));
         let down_first_pl = pipeline(d, &post, &tex_layout, "fs_down_first", HDR, None);
         let down_pl = pipeline(d, &post, &tex_layout, "fs_down", HDR, None);
@@ -253,6 +282,15 @@ impl Engine {
             bloom_bg,
             fbuf,
             finish_bg,
+            scene_bgl,
+            mirror,
+            clamp,
+            plates,
+            lbuf,
+            comp,
+            comp_bg,
+            layer_bg,
+            layers: true,
         };
         e.reset();
         e
@@ -267,9 +305,17 @@ impl Engine {
         self.queue.submit([enc.finish()]);
     }
 
+    /// Uploads the plan's pictures (each PLATE_W x PLATE_H RGBA8 sRGB, see plates.rs).
+    pub fn set_plates(&mut self, layers: &[Vec<u8>]) {
+        self.plates = plate_array(&self.device, &self.queue, layers);
+        let d = &self.device;
+        self.scene_bg = [0, 1].map(|u| [0, 1].map(|f| scene_bind(d, &self.scene_bgl, &self.ubuf[u], &self.fb[f], &self.mirror, &self.plates, &self.clamp)));
+        self.layer_bg = [0, 1].map(|u| scene_bind(d, &self.scene_bgl, &self.lbuf[u], &self.accum, &self.mirror, &self.plates, &self.clamp));
+    }
+
     /// Ids of scenes compiled (or attempted) so far.
     pub fn loaded(&self) -> Vec<String> {
-        self.pipelines.keys().chain(&self.failed).cloned().collect()
+        self.pipelines.keys().chain(&self.failed).filter(|k| !k.ends_with(LAYERS)).cloned().collect()
     }
 
     /// Registers a scene created after construction (generated scenes); compile it with `compile`.
@@ -283,14 +329,19 @@ impl Engine {
     pub fn remove_scene(&mut self, id: &str) {
         self.scenes.retain(|s| s.id != id);
         self.pipelines.remove(id);
+        self.pipelines.remove(&layers_key(id));
         self.failed.remove(id);
     }
 
-    /// (Re)compiles a scene from disk. On failure an existing pipeline is kept.
+    /// (Re)compiles a scene (and its layer pass, if it has one) from disk. On failure existing pipelines are kept.
     pub fn compile(&mut self, id: &str) -> Result<()> {
         match self.try_compile(id) {
-            Ok(pl) => {
+            Ok((pl, layers)) => {
                 self.pipelines.insert(id.to_string(), pl);
+                match layers {
+                    Some(l) => self.pipelines.insert(layers_key(id), l),
+                    None => self.pipelines.remove(&layers_key(id)),
+                };
                 self.failed.remove(id);
                 Ok(())
             }
@@ -301,19 +352,21 @@ impl Engine {
         }
     }
 
-    fn try_compile(&self, id: &str) -> Result<wgpu::RenderPipeline> {
+    fn try_compile(&self, id: &str) -> Result<(wgpu::RenderPipeline, Option<wgpu::RenderPipeline>)> {
         let scene = self.scenes.iter().find(|s| s.id == id).with_context(|| format!("unknown scene '{id}'"))?;
-        let src = scenes::shader_source(&self.scenes_dir, scene)?;
+        let main = self.build(id, scenes::shader_source(&self.scenes_dir, scene)?)?;
+        let layers = scenes::layers_source(&self.scenes_dir, scene).map(|src| self.build(&layers_key(id), src?)).transpose()?;
+        Ok((main, layers))
+    }
+
+    fn build(&self, label: &str, src: String) -> Result<wgpu::RenderPipeline> {
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(id),
-            source: wgpu::ShaderSource::Wgsl(src.into()),
-        });
+        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let pl = pipeline(&self.device, &module, &self.scene_layout, "fs_main", HDR, None);
         let errs = [pollster::block_on(validation.pop()), pollster::block_on(internal.pop())];
         if let Some(e) = errs.into_iter().flatten().next() {
-            bail!("scene '{id}': {e}");
+            bail!("scene '{label}': {e}");
         }
         Ok(pl)
     }
@@ -350,10 +403,36 @@ impl Engine {
         res
     }
 
-    /// Records bloom + finish into `enc`, drawing into `target`. Submit before the next `finish`.
+    /// Layer pass (backdrop + feedback + overlay) into `comp`; false when neither scene has one.
+    /// A morph blends B's layer pass (or plain feedback) over A's, like `step` does.
+    fn compose(&self, enc: &mut wgpu::CommandEncoder, fs: &FrameState) -> bool {
+        let get = |id: &str| self.pipelines.get(&layers_key(id)).filter(|_| self.layers);
+        let la = get(&fs.scene_a);
+        let lb = fs.b.as_ref().and_then(|(id, _)| get(id));
+        if la.is_none() && lb.is_none() {
+            return false;
+        }
+        self.queue.write_buffer(&self.lbuf[0], 0, bytemuck::bytes_of(&fs.a));
+        match la {
+            Some(p) => draw(enc, &self.comp, true, p, &self.layer_bg[0], 1.0),
+            None => draw(enc, &self.comp, true, &self.copy_pl, &self.accum_bg, 1.0),
+        }
+        if let Some((_, ub)) = &fs.b {
+            self.queue.write_buffer(&self.lbuf[1], 0, bytemuck::bytes_of(ub));
+            match lb {
+                Some(p) => draw(enc, &self.scratch, true, p, &self.layer_bg[1], 1.0),
+                None => draw(enc, &self.scratch, true, &self.copy_pl, &self.accum_bg, 1.0),
+            }
+            draw(enc, &self.comp, false, &self.copy_pl, &self.scratch_bg, fs.mix as f64);
+        }
+        true
+    }
+
+    /// Records the layer pass, bloom + finish into `enc`, drawing into `target`. Submit before the next `finish`.
     pub fn finish(&self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, fs: &FrameState, grain: bool, debug: bool) {
+        let src = self.compose(enc, fs) as usize;
         let n = self.bloom.len();
-        draw(enc, &self.bloom[0], true, &self.down_first_pl, &self.accum_bg, 1.0);
+        draw(enc, &self.bloom[0], true, &self.down_first_pl, [&self.accum_bg, &self.comp_bg][src], 1.0);
         for i in 1..n {
             draw(enc, &self.bloom[i], true, &self.down_pl, &self.bloom_bg[i - 1], 1.0);
         }
@@ -368,10 +447,59 @@ impl Engine {
             r: [self.out.0 as f32, self.out.1 as f32, (a.res_time[2] * OUT_FPS as f32).floor(), 0.0],
             d0: [a.beat[0], a.shape[0], a.shape[1], a.bands[1]],
             d1: [a.beat[1], a.beat[2], a.beat[3], a.shape[2]],
+            p0: [fs.post.vhs, fs.post.scanlines, fs.post.posterize, fs.post.tint_amount],
+            p1: [fs.post.tint[0], fs.post.tint[1], fs.post.tint[2], 0.0],
         };
         self.queue.write_buffer(&self.fbuf, 0, bytemuck::bytes_of(&u));
-        draw(enc, target, true, &self.finish_pl, &self.finish_bg, 1.0);
+        draw(enc, target, true, &self.finish_pl, &self.finish_bg[src], 1.0);
     }
+}
+
+const LAYERS: &str = "#layers";
+
+fn layers_key(id: &str) -> String {
+    format!("{id}{LAYERS}")
+}
+
+/// Plate array from PLATE_W x PLATE_H RGBA8 (sRGB) layers; none = one zeroed (transparent) texel.
+fn plate_array(d: &wgpu::Device, q: &wgpu::Queue, layers: &[Vec<u8>]) -> wgpu::TextureView {
+    let (w, h, n) = if layers.is_empty() { (1, 1, 1) } else { (PLATE_W, PLATE_H, layers.len() as u32) };
+    let t = d.create_texture(&wgpu::TextureDescriptor {
+        label: Some("plates"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: n },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (i, px) in layers.iter().enumerate() {
+        assert_eq!(px.len(), (4 * w * h) as usize, "plate {i} is not PLATE_W x PLATE_H RGBA8");
+        q.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: i as u32 }, aspect: wgpu::TextureAspect::All },
+            px,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+    t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() })
+}
+
+/// Scene / layer-pass bind group: uniforms, source texture (prev frame or accum), mirror sampler, plates, clamp sampler.
+fn scene_bind(
+    d: &wgpu::Device,
+    l: &wgpu::BindGroupLayout,
+    ub: &wgpu::Buffer,
+    src: &wgpu::TextureView,
+    mirror: &wgpu::Sampler,
+    plates: &wgpu::TextureView,
+    clamp: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    use wgpu::BindingResource as R;
+    let res = [ub.as_entire_binding(), R::TextureView(src), R::Sampler(mirror), R::TextureView(plates), R::Sampler(clamp)];
+    let entries: Vec<_> = res.into_iter().enumerate().map(|(i, r)| wgpu::BindGroupEntry { binding: i as u32, resource: r }).collect();
+    d.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &entries })
 }
 
 fn pipeline(
@@ -510,5 +638,53 @@ mod tests {
         for (s, name) in gen.iter().zip(&names) {
             e.compile(&s.id).unwrap_or_else(|err| panic!("{name}: {err:#}"));
         }
+
+        // Every backdrop x overlay pair (and each alone) compiles as a layer pass; finish runs it with every look on.
+        let ids = |l: &[crate::genome::Block]| std::iter::once(String::new()).chain(l.iter().map(|b| b.id.clone())).collect::<Vec<_>>();
+        let mut lay = Vec::new();
+        for b in ids(&blocks.backdrop) {
+            for o in ids(&blocks.overlay) {
+                if b.is_empty() && o.is_empty() {
+                    continue;
+                }
+                let g = crate::genome::Genome {
+                    motion: blocks.motion[0].id.clone(),
+                    emitter: blocks.emitter[0].id.clone(),
+                    colour: blocks.colour[0].id.clone(),
+                    palette: blocks.palettes[0].clone(),
+                    backdrop: b.clone(),
+                    overlay: o,
+                    plate: Some(0),
+                    text: "HELLO 123".into(),
+                    ..Default::default()
+                };
+                lay.push(crate::genome::write(&g, &blocks, &gen_dir).unwrap());
+            }
+        }
+        assert!(!lay.is_empty(), "no layer blocks found");
+        let mut e = Engine::new(&device, &queue, &lay, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm);
+        e.set_plates(&[vec![255; (PLATE_W * PLATE_H * 4) as usize]]);
+        for s in &lay {
+            e.compile(&s.id).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
+        }
+        let mut u = SceneUniforms::default();
+        u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
+        let post = Post { vhs: 1.0, scanlines: 1.0, posterize: 1.0, tint_amount: 1.0, tint: [0.0, 1.0, 0.0] };
+        let fs = FrameState { scene_a: lay[0].id.clone(), a: u, b: Some((lay[lay.len() - 1].id.clone(), u)), mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post };
+        e.step(&fs, Some(1.0)).unwrap();
+        let out = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 64, height: 36, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        e.finish(&mut enc, &out.create_view(&Default::default()), &fs, true, false);
+        queue.submit([enc.finish()]);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     }
 }

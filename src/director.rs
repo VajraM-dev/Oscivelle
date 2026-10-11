@@ -333,9 +333,15 @@ fn variations(a: &Analysis, sc: &Scene, seed: u64, start: f64, end: f64, single:
     out
 }
 
-/// Scene param j's uniform slot (8 params split over two vec4s).
+/// Scene param j's uniform slot (MAX_PARAMS params split over four vec4s).
 fn param_mut(u: &mut SceneUniforms, j: usize) -> &mut f32 {
-    if j < 4 { &mut u.p0[j] } else { &mut u.p1[j - 4] }
+    let row = match j / 4 {
+        0 => &mut u.p0,
+        1 => &mut u.p1,
+        2 => &mut u.p2,
+        _ => &mut u.p3,
+    };
+    &mut row[j % 4]
 }
 
 const SOURCES: [ModSource; 7] =
@@ -418,7 +424,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         if let Some(cur) = vs.get(v) {
             let prev = &vs[v.saturating_sub(1)];
             let f = smoothstep(((t - cur.time) / bar) as f32);
-            for (j, (x, y)) in prev.params.iter().zip(&cur.params).take(sc.params.len().min(8)).enumerate() {
+            for (j, (x, y)) in prev.params.iter().zip(&cur.params).take(sc.params.len().min(MAX_PARAMS)).enumerate() {
                 let val = lerp(*x, *y, f);
                 *param_mut(&mut u, j) = val;
             }
@@ -438,7 +444,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
             ModSource::Drop => base.shape[2],
         };
         for m in &s.mods {
-            // Scenes have ≤ 8 params (checked at load); a hand-edited plan may name a missing or fixed one.
+            // Scenes have ≤ MAX_PARAMS params (checked at load); a hand-edited plan may name a missing or fixed one.
             let Some(p) = sc.params.get(m.param).filter(|p| !p.fixed) else { continue };
             let slot = param_mut(&mut u, m.param);
             *slot = p.nudge(*slot, m.depth * src(m.source));
@@ -472,6 +478,12 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         .filter(|s| s.transition_in.kind == TransitionKind::Flash && t >= s.start)
         .map_or(0.0, |s| (1.0 - (t - s.start) / 0.4).max(0.0).powi(2));
     let drop_flash = if drop_dt < beat_len { 0.4 * drop_env } else { 0.0 };
+    // Finishing look: --look wins, else the segment's (blended through a morph).
+    let post_of = |s: &Segment| plan.post.or_else(|| s.genome.as_ref().map(|g| g.post)).unwrap_or_default();
+    let post = match in_morph(i).or_else(|| in_morph(i + 1)) {
+        Some((j, m)) => post_of(&segs[j - 1]).lerp(&post_of(&segs[j]), m),
+        None => segs.get(i).map(post_of).unwrap_or_default(),
+    };
     FrameState {
         scene_a,
         a: ua,
@@ -480,7 +492,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         flash: (0.06 * kick + trans_flash + drop_flash).clamp(0.0, 1.0) as f32,
         exposure: 1.0 + 0.1 * energy,
         saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2),
-        post: Post::default(),
+        post,
     }
 }
 
@@ -690,6 +702,8 @@ mod tests {
             motion: vec![block("m0"), block("m1")],
             emitter: vec![block("e0"), block("e1")],
             colour: vec![block("c0")],
+            backdrop: vec![],
+            overlay: vec![],
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
         let gen = |_, _, r| Some(genome::random(&blocks, r));
