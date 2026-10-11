@@ -787,4 +787,17 @@ mod tests {
             }
         }
     }
+
+    /// Saved engine-2 plans must keep rendering the same: a phase-1 engine-2 look's sources and params
+    /// (captured before phase 2).
+    #[test]
+    fn engine2_saved_looks_are_frozen() {
+        let b = blocks().pinned(2);
+        let sig = |s: String| format!("{:016x}", fnv1a(s.as_bytes()));
+        let g = Genome { space: "space_kaleido".into(), blend: "screen".into(), regime: "glitch".into(), ..genome() };
+        let layered = Genome { backdrop: "back_sky".into(), overlay: "over_hud".into(), plate: Some(1), feedback: Some(0.6), text: "HI".into(), ..g.clone() };
+        assert_eq!(sig(wgsl(&g, &b).unwrap()), "c741eb434d028a27");
+        assert_eq!(sig(layers_wgsl(&layered, &b).unwrap().unwrap()), "f1291d26fa6fffb5");
+        assert_eq!(sig(format!("{:?}", to_scene(&layered, &b, Path::new(".")).unwrap().params)), "c4cc527d35ec0a1a");
+    }
 }

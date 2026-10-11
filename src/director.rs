@@ -909,4 +909,34 @@ mod tests {
         assert!(on.post.strobe > 0.99 && off.post.strobe < 0.01, "strobe only on downbeats");
         assert!(frame_state(&p, &a, &scenes, 31.02, 64, 64, Quality::Draft).post.tear > 0.7 && off.post.tear < 0.01, "tear rides the snare");
     }
+
+    /// Saved engine-2 plans must keep rendering the same: per-frame state of a fixed engine-2 plan (captured
+    /// before phase 2). Single mode with no blocks, so no phase-2 planning change can reach the plan itself.
+    #[test]
+    fn engine2_saved_frames_are_frozen() {
+        let mut a = test_analysis();
+        a.snares = vec![Kick { time: 31.0, strength: 1.0 }];
+        let scenes = test_scenes();
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Single, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
+        let mut p = plan(&req).unwrap();
+        // A second segment entered by a plain morph, carrying a glitch look.
+        let mut s2 = p.segments[0].clone();
+        s2.start = 96.0;
+        s2.scene = "s2".into();
+        s2.transition_in = Transition { kind: TransitionKind::Morph, duration: 4.0 };
+        s2.genome = Some(Genome { post: Post { strobe: 0.5, tear: 0.5, ..Default::default() }, ..Default::default() });
+        p.segments[0].end = 96.0;
+        p.segments.push(s2);
+        let mut s = serde_json::to_string(&p).unwrap();
+        for t in [0.3, 31.02, 63.75, 64.05, 95.0, 96.0, 97.9, 300.0] {
+            let f = frame_state(&p, &a, &scenes, t, 64, 64, Quality::Draft);
+            let u = &f.a;
+            s += &format!(
+                "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?} {:?} {} {} {} {} {:?}
+",
+                u.res_time, u.beat, u.bands, u.shape, u.p0, u.p1, u.p2, u.p3, u.pal, u.misc, u.hits, f.b.as_ref().map(|b| &b.0), f.mix, f.flash, f.exposure, f.saturation, f.post
+            );
+        }
+        assert_eq!(format!("{:016x}", fnv1a(s.as_bytes())), "7906e936205298a0");
+    }
 }
