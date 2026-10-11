@@ -7,7 +7,7 @@ struct F {
     d0: vec4<f32>, // kick, energy, tension, bass
     d1: vec4<f32>, // beat phase, bar phase, phrase phase, drop env
     p0: vec4<f32>, // vhs, scanlines, posterize, tint amount (all 0 = clean)
-    p1: vec4<f32>, // tint rgb (linear)
+    p1: vec4<f32>, // tint rgb (sRGB-encoded on the CPU)
 };
 
 @group(0) @binding(0) var<uniform> f: F;
@@ -101,7 +101,8 @@ fn vhs_uv(uv: vec2<f32>, amt: f32, t: f32, frame: u32) -> vec2<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let frame = u32(f.r.z);
-    let uv = select(in.uv, vhs_uv(in.uv, f.p0.x, f.b.x, frame), f.p0.x > 0.0);
+    var uv = in.uv;
+    if (f.p0.x > 0.0) { uv = vhs_uv(in.uv, f.p0.x, f.b.x, frame); }
     let p = uv - 0.5;
     // Gentle chromatic aberration, growing towards the edges; VHS adds a horizontal chroma bleed.
     let ca = p * dot(p, p) * 0.012 + vec2<f32>(f.p0.x * 0.004, 0.0);
@@ -117,13 +118,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     c = srgb(tonemap(c));
     // Looks (finish-pass only; every term is a no-op at 0, so the clean look is unchanged).
     let lum = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-    c = mix(c, lum * srgb(f.p1.rgb) * 1.4, f.p0.w);
+    c = mix(c, lum * f.p1.rgb * 1.4, f.p0.w);
     if (f.p0.z > 0.0) {
         let levels = mix(64.0, 4.0, f.p0.z);
         c = floor(c * levels + 0.5) / levels;
     }
     // Scanlines: one dark line every 2 px at 1080p (scaled with the output height).
-    c *= 1.0 - f.p0.y * 0.35 * (0.5 + 0.5 * cos(in.pos.y * 540.0 / f.r.y * 6.2831853));
+    if (f.p0.y > 0.0) {
+        c *= 1.0 - f.p0.y * 0.35 * (0.5 + 0.5 * cos(in.pos.y * 540.0 / f.r.y * 6.2831853));
+    }
 
     if (f.a.w > 0.0) {
         // Light, fine, monochrome (so 4:2:0 chroma subsampling can't smear it), mostly in the midtones.

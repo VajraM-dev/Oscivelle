@@ -73,10 +73,11 @@ fn backdrop(p: vec2<f32>) -> vec3<f32> {
     let yaw = sin(time() * 0.03) * 0.25 * BP(2);
     let ro = vec3<f32>(0.0, BP(0), 0.0);
     let r0 = normalize(vec3<f32>(p.x, p.y - 0.15, 1.8));
-    let rd = vec3<f32>(r0.x * cos(yaw) + r0.z * sin(yaw), r0.y, -r0.x * sin(yaw) + r0.z * cos(yaw));
-    let hit = back_sea_march(ro, rd, 40.0);
-    // Sea plane y = 0, analytic.
+    let rxz = r0.xz * rot2(yaw);
+    let rd = vec3<f32>(rxz.x, r0.y, rxz.y);
+    // Sea plane y = 0, analytic; downward rays stop marching at the water.
     let ts = select(-1.0, -ro.y / rd.y, rd.y < 0.0);
+    let hit = back_sea_march(ro, rd, select(40.0, min(ts, 40.0), ts > 0.0));
     if (hit.x > 0.0 && (ts < 0.0 || hit.x < ts)) {
         return back_sea_shade(ro + rd * hit.x, rd, hit.y);
     }

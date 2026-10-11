@@ -3,12 +3,9 @@
 
 // v in card space: undo a rotation by b about x after a about y.
 fn back_sprite_local(v: vec3<f32>, a: f32, b: f32) -> vec3<f32> {
-    let ca = cos(a);
-    let sa = sin(a);
-    let u = vec3<f32>(ca * v.x - sa * v.z, v.y, sa * v.x + ca * v.z);
-    let cb = cos(b);
-    let sb = sin(b);
-    return vec3<f32>(u.x, cb * u.y + sb * u.z, -sb * u.y + cb * u.z);
+    let uxz = rot2(a) * v.xz;
+    let yz = vec2<f32>(v.y, uxz.y) * rot2(b);
+    return vec3<f32>(uxz.x, yz.x, yz.y);
 }
 
 fn backdrop(p: vec2<f32>) -> vec3<f32> {

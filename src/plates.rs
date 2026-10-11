@@ -1,5 +1,5 @@
 //! Pictures ("plates") a look can show: --image files and AI-made ones. Each is centre-cropped and
-//! resized to PLATE_W x PLATE_H (3:2), RGBA8 sRGB, ready for Engine::set_plates.
+//! resized to PLATE_W x PLATE_H (3:2), RGBA8 sRGB, ready for Engine::new.
 use crate::types::{PLATE_H, PLATE_W};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ fn fit(img: image::DynamicImage) -> Vec<u8> {
     img.resize_to_fill(PLATE_W, PLATE_H, image::imageops::FilterType::Lanczos3).to_rgba8().into_raw()
 }
 
-pub fn load(path: &Path) -> Result<Vec<u8>> {
+fn load(path: &Path) -> Result<Vec<u8>> {
     Ok(fit(image::open(path).with_context(|| format!("reading image {}", path.display()))?))
 }
 
@@ -19,7 +19,6 @@ pub fn load(path: &Path) -> Result<Vec<u8>> {
 pub fn load_all(paths: &[PathBuf]) -> Vec<Vec<u8>> {
     paths
         .iter()
-        .take(MAX)
         .map(|p| {
             load(p).unwrap_or_else(|e| {
                 eprintln!("warning: {e:#}; that picture stays blank");

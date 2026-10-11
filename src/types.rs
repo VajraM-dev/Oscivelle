@@ -251,23 +251,23 @@ pub const PLATE_H: u32 = 1024;
 /// Scene param slots (SceneUniforms p0..p3). Hand-made scenes use ≤ 8 in practice; layered genomes 14.
 pub const MAX_PARAMS: usize = 16;
 
+pub fn lerp(a: f32, b: f32, f: f32) -> f32 {
+    a + (b - a) * f
+}
+
 /// Finishing look applied by the finish pass. All zero = the clean default (output unchanged).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(default)]
 pub struct Post {
     /// Tape wobble, chroma bleed and a rolling tracking band, 0..1.
-    #[serde(default)]
     pub vhs: f32,
     /// Scanline darkening, 0..1.
-    #[serde(default)]
     pub scanlines: f32,
     /// Colour banding, 0 off .. 1 = 4 levels per channel.
-    #[serde(default)]
     pub posterize: f32,
     /// Monochrome tint strength towards `tint`, 0..1.
-    #[serde(default)]
     pub tint_amount: f32,
     /// Linear RGB.
-    #[serde(default)]
     pub tint: [f32; 3],
 }
 
@@ -277,13 +277,12 @@ impl Post {
     }
 
     pub fn lerp(&self, o: &Post, f: f32) -> Post {
-        let l = |a: f32, b: f32| a + (b - a) * f;
         Post {
-            vhs: l(self.vhs, o.vhs),
-            scanlines: l(self.scanlines, o.scanlines),
-            posterize: l(self.posterize, o.posterize),
-            tint_amount: l(self.tint_amount, o.tint_amount),
-            tint: [0, 1, 2].map(|k| l(self.tint[k], o.tint[k])),
+            vhs: lerp(self.vhs, o.vhs, f),
+            scanlines: lerp(self.scanlines, o.scanlines, f),
+            posterize: lerp(self.posterize, o.posterize, f),
+            tint_amount: lerp(self.tint_amount, o.tint_amount, f),
+            tint: [0, 1, 2].map(|k| lerp(self.tint[k], o.tint[k], f)),
         }
     }
 }

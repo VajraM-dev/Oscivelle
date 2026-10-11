@@ -336,11 +336,12 @@ fn run(cli: Cli) -> Result<()> {
             .segments
             .iter()
             .filter_map(|s| s.genome.as_ref())
-            .flat_map(|g| [format!("{}.wgsl", g.id()), format!("{}.layers.wgsl", g.id())])
+            .map(|g| g.id().to_string())
             .collect();
         for e in std::fs::read_dir(&gen_dir).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".wgsl") && !used.contains(&name) {
+            // `<id>.wgsl` and `<id>.layers.wgsl` both belong to genome `<id>`.
+            if name.ends_with(".wgsl") && !used.iter().any(|id| name.split('.').next() == Some(id.as_str())) {
                 let _ = std::fs::remove_file(e.path());
             }
         }

@@ -20,7 +20,8 @@ const MAX_STEPS: u32 = 4;
 /// Keys: Esc quit, Space pause, R restart, D toggle debug overlay.
 pub fn run(audio: &Path, analysis: &Analysis, plan: &Plan, scenes: &[Scene], scenes_dir: &Path, quality: Quality, start: f64) -> Result<()> {
     let event_loop = EventLoop::new()?;
-    let mut app = App { audio, analysis, plan, scenes, scenes_dir, quality, start, live: None, err: None };
+    let plates = crate::plates::load_all(&plan.plates);
+    let mut app = App { audio, analysis, plan, scenes, scenes_dir, quality, start, plates, live: None, err: None };
     event_loop.run_app(&mut app)?;
     app.err.map_or(Ok(()), Err)
 }
@@ -33,6 +34,8 @@ struct App<'a> {
     scenes_dir: &'a Path,
     quality: Quality,
     start: f64,
+    /// Decoded once; reused when a resize rebuilds the engine.
+    plates: Vec<Vec<u8>>,
     live: Option<Live>,
     err: Option<anyhow::Error>,
 }
@@ -75,9 +78,8 @@ impl App<'_> {
         let caps = surface.get_capabilities(&adapter);
         config.format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(config.format);
         surface.configure(&device, &config);
-        let mut engine = Engine::new(&device, &queue, self.scenes, self.scenes_dir, self.quality, config.width, config.height, config.format);
         // ponytail: layer files aren't hot-reloaded; restart --dev after editing a back_/over_ block.
-        engine.set_plates(&crate::plates::load_all(&self.plan.plates));
+        let engine = Engine::new(&device, &queue, self.scenes, self.scenes_dir, self.quality, config.width, config.height, config.format, &self.plates);
 
         let mut sink = rodio::DeviceSinkBuilder::open_default_sink().map_err(|e| anyhow!("audio output: {e}"))?;
         sink.log_on_drop(false);
@@ -209,8 +211,7 @@ impl ApplicationHandler for App<'_> {
                     l.config.height = size.height;
                     l.surface.configure(&l.device, &l.config);
                     // Sim/out textures and finish uniforms are sized at construction: rebuild (feedback restarts; sim_t kept).
-                    l.engine = Engine::new(&l.device, &l.queue, self.scenes, self.scenes_dir, self.quality, size.width, size.height, l.config.format);
-                    l.engine.set_plates(&crate::plates::load_all(&self.plan.plates));
+                    l.engine = Engine::new(&l.device, &l.queue, self.scenes, self.scenes_dir, self.quality, size.width, size.height, l.config.format, &self.plates);
                     l.fs = None; // stale: carries the old sim size
                     l.dirty = false;
                 }

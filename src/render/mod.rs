@@ -66,8 +66,7 @@ pub fn render_video(job: &RenderJob) -> Result<()> {
     let instance = wgpu::Instance::default();
     let (_adapter, device, queue) = engine::gpu(&instance, job.cpu, None)?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut eng = Engine::new(&device, &queue, job.scenes, &job.scenes_dir, job.quality, job.width, job.height, format);
-    eng.set_plates(&crate::plates::load_all(&job.plan.plates));
+    let mut eng = Engine::new(&device, &queue, job.scenes, &job.scenes_dir, job.quality, job.width, job.height, format, &crate::plates::load_all(&job.plan.plates));
     eprintln!("sim {}x{} -> output {}x{} ({:?})", eng.sim.0, eng.sim.1, job.width, job.height, job.quality);
     let out_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("out"),

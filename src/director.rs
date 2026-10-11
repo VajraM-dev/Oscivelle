@@ -508,10 +508,6 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     }
 }
 
-fn lerp(a: f32, b: f32, f: f32) -> f32 {
-    a + (b - a) * f
-}
-
 fn smoothstep(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)

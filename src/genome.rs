@@ -381,14 +381,18 @@ pub fn mutate(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     out
 }
 
+/// 16-bit slice `k` of the hash `r`.
+fn piece(r: u64, k: u32) -> usize {
+    ((r >> (16 * k)) & 0xffff) as usize
+}
+
 /// Uniform random genome from `r` (a 64-bit hash; consumed in 16-bit pieces).
 pub fn random(blocks: &Blocks, r: u64) -> Genome {
-    let piece = |k: u32| ((r >> (16 * k)) & 0xffff) as usize;
     Genome {
-        motion: nth_id(&blocks.motion, piece(0)),
-        emitter: nth_id(&blocks.emitter, piece(1)),
-        colour: nth_id(&blocks.colour, piece(2)),
-        palette: blocks.palettes[piece(3) % blocks.palettes.len()].clone(),
+        motion: nth_id(&blocks.motion, piece(r, 0)),
+        emitter: nth_id(&blocks.emitter, piece(r, 1)),
+        colour: nth_id(&blocks.colour, piece(r, 2)),
+        palette: blocks.palettes[piece(r, 3) % blocks.palettes.len()].clone(),
         params: BTreeMap::new(),
         ..Default::default()
     }
@@ -400,17 +404,16 @@ pub fn dress(g: &Genome, blocks: &Blocks, r: u64, plates: usize, text: &str) -> 
     // ponytail: needs are sniffed from the block source; a toml flag if a block ever calls them indirectly.
     let backs: Vec<&Block> = blocks.backdrop.iter().filter(|b| plates > 0 || !b.wgsl.contains("img(")).collect();
     let overs: Vec<&Block> = blocks.overlay.iter().filter(|b| !text.is_empty() || !b.wgsl.contains("text_px(")).collect();
-    let piece = |k: u32| ((r >> (16 * k)) & 0xffff) as usize;
     let mut out = g.clone();
-    if let Some(b) = backs.get(piece(0) % backs.len().max(1)) {
+    if let Some(b) = backs.get(piece(r, 0) % backs.len().max(1)) {
         out.backdrop = b.id.clone();
     }
-    if piece(1) % 2 == 0 {
-        if let Some(b) = overs.get(piece(2) % overs.len().max(1)) {
+    if piece(r, 1) % 2 == 0 {
+        if let Some(b) = overs.get(piece(r, 2) % overs.len().max(1)) {
             out.overlay = b.id.clone();
         }
     }
-    out.plate = (plates > 0).then(|| (piece(3) % plates) as u32);
+    out.plate = (plates > 0).then(|| (piece(r, 3) % plates) as u32);
     out.text = text.into();
     out.feedback = Some(0.7);
     out

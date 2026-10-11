@@ -47,7 +47,7 @@ struct FinishUniforms {
     d0: [f32; 4],
     d1: [f32; 4],
     p0: [f32; 4], // vhs, scanlines, posterize, tint amount
-    p1: [f32; 4], // tint rgb (linear)
+    p1: [f32; 4], // tint rgb (sRGB-encoded)
 }
 
 pub struct Engine {
@@ -60,6 +60,8 @@ pub struct Engine {
     final_q: bool,
     scene_layout: wgpu::PipelineLayout,
     pipelines: HashMap<String, wgpu::RenderPipeline>,
+    /// Layer-pass pipelines of the scenes that have one, keyed by scene id.
+    layer_pipelines: HashMap<String, wgpu::RenderPipeline>,
     failed: HashSet<String>,
     fb: [wgpu::TextureView; 2],
     cur: usize,
@@ -81,17 +83,10 @@ pub struct Engine {
     fbuf: wgpu::Buffer,
     /// [accum, comp]
     finish_bg: [wgpu::BindGroup; 2],
-    scene_bgl: wgpu::BindGroupLayout,
-    mirror: wgpu::Sampler,
-    clamp: wgpu::Sampler,
-    /// The plan's pictures (texture array); one transparent texel when there are none.
-    plates: wgpu::TextureView,
-    /// Uniforms of the layer pass, [a/b].
-    lbuf: [wgpu::Buffer; 2],
     /// Layer pass output (sim size, HDR); bloom + finish read it instead of `accum` when used.
     comp: wgpu::TextureView,
     comp_bg: wgpu::BindGroup,
-    /// [uniforms a/b], source = accum.
+    /// [uniforms a/b], source = accum (reuses `ubuf`: finish is submitted before the next step rewrites it).
     layer_bg: [wgpu::BindGroup; 2],
     /// Run layer passes (the judge turns this off: it scores the feedback, not the backdrop).
     pub layers: bool,
@@ -99,6 +94,7 @@ pub struct Engine {
 
 impl Engine {
     /// `out_format` is the finish target format (Rgba8Unorm for video, the surface format for preview).
+    /// `plates`: the plan's pictures (each PLATE_W x PLATE_H RGBA8 sRGB, see plates.rs).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
@@ -109,6 +105,7 @@ impl Engine {
         width: u32,
         height: u32,
         out_format: wgpu::TextureFormat,
+        plates: &[Vec<u8>],
     ) -> Self {
         let final_q = quality == Quality::Final;
         let ss = if final_q { 1.5 } else { 1.0 };
@@ -211,29 +208,24 @@ impl Engine {
             })
         };
         let ubuf = [buf(size_of::<SceneUniforms>()), buf(size_of::<SceneUniforms>())];
-        let lbuf = [buf(size_of::<SceneUniforms>()), buf(size_of::<SceneUniforms>())];
         let fbuf = buf(size_of::<FinishUniforms>());
-        let plates = plate_array(d, queue, &[]);
+        let plates = plate_array(d, queue, plates);
 
-        let bg = |l: &wgpu::BindGroupLayout, res: &[wgpu::BindingResource]| {
-            let entries: Vec<_> = res
-                .iter()
-                .enumerate()
-                .map(|(i, r)| wgpu::BindGroupEntry { binding: i as u32, resource: r.clone() })
-                .collect();
-            d.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &entries })
-        };
         use wgpu::BindingResource as R;
-        let scene_bg = [0, 1].map(|u| [0, 1].map(|f| scene_bind(d, &scene_bgl, &ubuf[u], &fb[f], &mirror, &plates, &clamp)));
-        let layer_bg = [0, 1].map(|u| scene_bind(d, &scene_bgl, &lbuf[u], &accum, &mirror, &plates, &clamp));
-        let tex_bg = |v: &wgpu::TextureView| bg(&tex_bgl, &[R::TextureView(v), R::Sampler(&clamp)]);
+        // Scene / layer-pass bind group: uniforms, source texture (prev frame or accum), mirror sampler, plates, clamp sampler.
+        let scene_bind = |u: &wgpu::Buffer, src| {
+            bg(d, &scene_bgl, &[u.as_entire_binding(), R::TextureView(src), R::Sampler(&mirror), R::TextureView(&plates), R::Sampler(&clamp)])
+        };
+        let scene_bg = [0, 1].map(|u| [0, 1].map(|f| scene_bind(&ubuf[u], &fb[f])));
+        let layer_bg = [0, 1].map(|u| scene_bind(&ubuf[u], &accum));
+        let tex_bg = |v: &wgpu::TextureView| bg(d, &tex_bgl, &[R::TextureView(v), R::Sampler(&clamp)]);
         let fb_bg = [tex_bg(&fb[0]), tex_bg(&fb[1])];
         let scratch_bg = tex_bg(&scratch);
         let accum_bg = tex_bg(&accum);
         let comp_bg = tex_bg(&comp);
         let bloom_bg = bloom.iter().map(tex_bg).collect();
         let finish_bg = [&accum, &comp].map(|src| {
-            bg(&finish_bgl, &[fbuf.as_entire_binding(), R::TextureView(src), R::TextureView(&bloom[0]), R::Sampler(&clamp)])
+            bg(d, &finish_bgl, &[fbuf.as_entire_binding(), R::TextureView(src), R::TextureView(&bloom[0]), R::Sampler(&clamp)])
         });
 
         let post = d.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -263,6 +255,7 @@ impl Engine {
             final_q,
             scene_layout,
             pipelines: HashMap::new(),
+            layer_pipelines: HashMap::new(),
             failed: HashSet::new(),
             fb,
             cur: 0,
@@ -282,11 +275,6 @@ impl Engine {
             bloom_bg,
             fbuf,
             finish_bg,
-            scene_bgl,
-            mirror,
-            clamp,
-            plates,
-            lbuf,
             comp,
             comp_bg,
             layer_bg,
@@ -305,17 +293,9 @@ impl Engine {
         self.queue.submit([enc.finish()]);
     }
 
-    /// Uploads the plan's pictures (each PLATE_W x PLATE_H RGBA8 sRGB, see plates.rs).
-    pub fn set_plates(&mut self, layers: &[Vec<u8>]) {
-        self.plates = plate_array(&self.device, &self.queue, layers);
-        let d = &self.device;
-        self.scene_bg = [0, 1].map(|u| [0, 1].map(|f| scene_bind(d, &self.scene_bgl, &self.ubuf[u], &self.fb[f], &self.mirror, &self.plates, &self.clamp)));
-        self.layer_bg = [0, 1].map(|u| scene_bind(d, &self.scene_bgl, &self.lbuf[u], &self.accum, &self.mirror, &self.plates, &self.clamp));
-    }
-
     /// Ids of scenes compiled (or attempted) so far.
     pub fn loaded(&self) -> Vec<String> {
-        self.pipelines.keys().chain(&self.failed).filter(|k| !k.ends_with(LAYERS)).cloned().collect()
+        self.pipelines.keys().chain(&self.failed).cloned().collect()
     }
 
     /// Registers a scene created after construction (generated scenes); compile it with `compile`.
@@ -329,7 +309,7 @@ impl Engine {
     pub fn remove_scene(&mut self, id: &str) {
         self.scenes.retain(|s| s.id != id);
         self.pipelines.remove(id);
-        self.pipelines.remove(&layers_key(id));
+        self.layer_pipelines.remove(id);
         self.failed.remove(id);
     }
 
@@ -339,8 +319,8 @@ impl Engine {
             Ok((pl, layers)) => {
                 self.pipelines.insert(id.to_string(), pl);
                 match layers {
-                    Some(l) => self.pipelines.insert(layers_key(id), l),
-                    None => self.pipelines.remove(&layers_key(id)),
+                    Some(l) => self.layer_pipelines.insert(id.to_string(), l),
+                    None => self.layer_pipelines.remove(id),
                 };
                 self.failed.remove(id);
                 Ok(())
@@ -355,7 +335,7 @@ impl Engine {
     fn try_compile(&self, id: &str) -> Result<(wgpu::RenderPipeline, Option<wgpu::RenderPipeline>)> {
         let scene = self.scenes.iter().find(|s| s.id == id).with_context(|| format!("unknown scene '{id}'"))?;
         let main = self.build(id, scenes::shader_source(&self.scenes_dir, scene)?)?;
-        let layers = scenes::layers_source(&self.scenes_dir, scene).map(|src| self.build(&layers_key(id), src?)).transpose()?;
+        let layers = scenes::layers_source(&self.scenes_dir, scene).map(|src| self.build(&format!("{id} layers"), src?)).transpose()?;
         Ok((main, layers))
     }
 
@@ -406,24 +386,29 @@ impl Engine {
     /// Layer pass (backdrop + feedback + overlay) into `comp`; false when neither scene has one.
     /// A morph blends B's layer pass (or plain feedback) over A's, like `step` does.
     fn compose(&self, enc: &mut wgpu::CommandEncoder, fs: &FrameState) -> bool {
-        let get = |id: &str| self.pipelines.get(&layers_key(id)).filter(|_| self.layers);
+        let get = |id: &str| self.layer_pipelines.get(id).filter(|_| self.layers);
         let la = get(&fs.scene_a);
         let lb = fs.b.as_ref().and_then(|(id, _)| get(id));
         if la.is_none() && lb.is_none() {
             return false;
         }
-        self.queue.write_buffer(&self.lbuf[0], 0, bytemuck::bytes_of(&fs.a));
-        match la {
-            Some(p) => draw(enc, &self.comp, true, p, &self.layer_bg[0], 1.0),
-            None => draw(enc, &self.comp, true, &self.copy_pl, &self.accum_bg, 1.0),
-        }
-        if let Some((_, ub)) = &fs.b {
-            self.queue.write_buffer(&self.lbuf[1], 0, bytemuck::bytes_of(ub));
-            match lb {
-                Some(p) => draw(enc, &self.scratch, true, p, &self.layer_bg[1], 1.0),
-                None => draw(enc, &self.scratch, true, &self.copy_pl, &self.accum_bg, 1.0),
+        // Scene `u`'s layer pass (or plain feedback) into comp: replacing it (mix None) or blended over it.
+        let mut layer = |u: usize, ub: &SceneUniforms, l: Option<&wgpu::RenderPipeline>, mix: Option<f64>| {
+            let Some(p) = l else {
+                return draw(enc, &self.comp, mix.is_none(), &self.copy_pl, &self.accum_bg, mix.unwrap_or(1.0));
+            };
+            self.queue.write_buffer(&self.ubuf[u], 0, bytemuck::bytes_of(ub));
+            match mix {
+                None => draw(enc, &self.comp, true, p, &self.layer_bg[u], 1.0),
+                Some(w) => {
+                    draw(enc, &self.scratch, true, p, &self.layer_bg[u], 1.0);
+                    draw(enc, &self.comp, false, &self.copy_pl, &self.scratch_bg, w);
+                }
             }
-            draw(enc, &self.comp, false, &self.copy_pl, &self.scratch_bg, fs.mix as f64);
+        };
+        layer(0, &fs.a, la, None);
+        if let Some((_, ub)) = &fs.b {
+            layer(1, ub, lb, Some(fs.mix as f64));
         }
         true
     }
@@ -448,17 +433,17 @@ impl Engine {
             d0: [a.beat[0], a.shape[0], a.shape[1], a.bands[1]],
             d1: [a.beat[1], a.beat[2], a.beat[3], a.shape[2]],
             p0: [fs.post.vhs, fs.post.scanlines, fs.post.posterize, fs.post.tint_amount],
-            p1: [fs.post.tint[0], fs.post.tint[1], fs.post.tint[2], 0.0],
+            p1: { let t = fs.post.tint.map(srgb); [t[0], t[1], t[2], 0.0] },
         };
         self.queue.write_buffer(&self.fbuf, 0, bytemuck::bytes_of(&u));
         draw(enc, target, true, &self.finish_pl, &self.finish_bg[src], 1.0);
     }
 }
 
-const LAYERS: &str = "#layers";
-
-fn layers_key(id: &str) -> String {
-    format!("{id}{LAYERS}")
+/// Bind group from `res`, bound at 0, 1, 2, ... in order.
+fn bg(d: &wgpu::Device, l: &wgpu::BindGroupLayout, res: &[wgpu::BindingResource]) -> wgpu::BindGroup {
+    let entries: Vec<_> = res.iter().enumerate().map(|(i, r)| wgpu::BindGroupEntry { binding: i as u32, resource: r.clone() }).collect();
+    d.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &entries })
 }
 
 /// Plate array from PLATE_W x PLATE_H RGBA8 (sRGB) layers; none = one zeroed (transparent) texel.
@@ -484,22 +469,6 @@ fn plate_array(d: &wgpu::Device, q: &wgpu::Queue, layers: &[Vec<u8>]) -> wgpu::T
         );
     }
     t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() })
-}
-
-/// Scene / layer-pass bind group: uniforms, source texture (prev frame or accum), mirror sampler, plates, clamp sampler.
-fn scene_bind(
-    d: &wgpu::Device,
-    l: &wgpu::BindGroupLayout,
-    ub: &wgpu::Buffer,
-    src: &wgpu::TextureView,
-    mirror: &wgpu::Sampler,
-    plates: &wgpu::TextureView,
-    clamp: &wgpu::Sampler,
-) -> wgpu::BindGroup {
-    use wgpu::BindingResource as R;
-    let res = [ub.as_entire_binding(), R::TextureView(src), R::Sampler(mirror), R::TextureView(plates), R::Sampler(clamp)];
-    let entries: Vec<_> = res.into_iter().enumerate().map(|(i, r)| wgpu::BindGroupEntry { binding: i as u32, resource: r }).collect();
-    d.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: l, entries: &entries })
 }
 
 fn pipeline(
@@ -531,6 +500,11 @@ fn pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Linear -> sRGB-encoded, same curve as finish.wgsl's `srgb`.
+fn srgb(c: f32) -> f32 {
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
 }
 
 fn begin<'e>(enc: &'e mut wgpu::CommandEncoder, view: &wgpu::TextureView, clear: bool) -> wgpu::RenderPass<'e> {
@@ -585,7 +559,7 @@ mod tests {
         let instance = wgpu::Instance::default();
         let (_a, device, queue) = gpu(&instance, false, None).unwrap();
         for q in [Quality::Draft, Quality::Final] {
-            let mut e = Engine::new(&device, &queue, &scenes, &dir, q, 320, 180, wgpu::TextureFormat::Rgba8Unorm);
+            let mut e = Engine::new(&device, &queue, &scenes, &dir, q, 320, 180, wgpu::TextureFormat::Rgba8Unorm, &[]);
             let mut u = SceneUniforms::default();
             u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 0.0, 1.0 / SIM_HZ as f32];
             u.beat[0] = 1.0;
@@ -616,7 +590,7 @@ mod tests {
         // Every shipped scene compiles against the real prelude + common.wgsl.
         let dir = Path::new("scenes");
         let real = scenes::load_all(dir).unwrap();
-        let mut e = Engine::new(&device, &queue, &real, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm);
+        let mut e = Engine::new(&device, &queue, &real, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[]);
         for s in &real {
             e.compile(&s.id).unwrap();
         }
@@ -634,7 +608,7 @@ mod tests {
                 }
             }
         }
-        let mut e = Engine::new(&device, &queue, &gen, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm);
+        let mut e = Engine::new(&device, &queue, &gen, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[]);
         for (s, name) in gen.iter().zip(&names) {
             e.compile(&s.id).unwrap_or_else(|err| panic!("{name}: {err:#}"));
         }
@@ -662,8 +636,7 @@ mod tests {
             }
         }
         assert!(!lay.is_empty(), "no layer blocks found");
-        let mut e = Engine::new(&device, &queue, &lay, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm);
-        e.set_plates(&[vec![255; (PLATE_W * PLATE_H * 4) as usize]]);
+        let mut e = Engine::new(&device, &queue, &lay, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[vec![255; (PLATE_W * PLATE_H * 4) as usize]]);
         for s in &lay {
             e.compile(&s.id).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
         }
