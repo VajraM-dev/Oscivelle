@@ -356,10 +356,9 @@ fn run(cli: Cli) -> Result<()> {
                 }
             };
             // Drops are hard cuts into a new shot: --layers flashes; engine 2 resets (black, then the new world
-            // rebuilds), with or without --layers, except in single mode (one look for the whole track).
-            // --layers also morphs into each build-up.
+            // rebuilds), with or without --layers. --layers also morphs into each build-up.
             let drop_cut = Transition::drop_cut(looks);
-            let drop_shots = cli.layers || (looks >= 2 && mode != Mode::Single);
+            let drop_shots = cli.layers || looks >= 2;
             let shots: Vec<Shot> = analysis
                 .drops
                 .iter()
@@ -381,6 +380,8 @@ fn run(cli: Cli) -> Result<()> {
             };
             let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if story.is_empty() { &dressed } else { &storyboard };
             let shots = if story.is_empty() { shots } else { story.iter().map(|(s, _)| *s).collect() };
+            // Single mode is one look for the whole track: no new shots, whatever asked for them.
+            let shots = if mode == Mode::Single { Vec::new() } else { shots };
             // Only when engine 2 was asked for: it's the default, so the note would otherwise show on every vibe.
             if looks < engine && cli.engine.is_some() {
                 eprintln!("note: --vibe uses engine 1 looks");

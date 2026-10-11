@@ -324,8 +324,9 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     }
     // Engine 2: generated segments develop at their phrases, and morphs get a seed-chosen style.
     if req.engine >= 2 {
-        if let Some(blocks) = req.blocks {
-            segments = phrase_variants(a, segments, blocks, req.gen_dir, req.mode == Mode::Single, req.engine)?;
+        // Single mode keeps one look: it evolves through its variations, never through new looks.
+        if let Some(blocks) = req.blocks.filter(|_| req.mode != Mode::Single) {
+            segments = phrase_variants(a, segments, blocks, req.gen_dir, req.engine)?;
         }
         for s in segments.iter_mut().filter(|s| !s.locked && s.transition_in.kind == TransitionKind::Morph) {
             s.transition_in.kind = MORPHS[(hash(s.seed, 9) % MORPHS.len() as u64) as usize];
@@ -359,7 +360,7 @@ const PHRASE_CUTS: [TransitionKind; 5] = [TransitionKind::Cut, TransitionKind::W
 /// Engine 2: a generated segment develops at its 16/32-bar phrases. From 8 bars in until 8 bars before its
 /// end, each such phrase (none within a bar of a drop: drops get their own cut) starts a variant of the look
 /// before it (genome::vary: another fold, comp framing or palette). Locked segments are left alone.
-fn phrase_variants(a: &Analysis, segs: Vec<Segment>, blocks: &Blocks, gen_dir: &std::path::Path, single: bool, engine: u32) -> Result<Vec<Segment>> {
+fn phrase_variants(a: &Analysis, segs: Vec<Segment>, blocks: &Blocks, gen_dir: &std::path::Path, engine: u32) -> Result<Vec<Segment>> {
     let bar = bar_len(a);
     // Variants pick space folds and comp framings from the frozen library only (seeds stay reproducible
     // whatever else is in the blocks folder); the full library still builds them.
@@ -397,7 +398,7 @@ fn phrase_variants(a: &Analysis, segs: Vec<Segment>, blocks: &Blocks, gen_dir: &
                 palette: 0,
                 title: None,
                 transition_in: Transition { kind, duration: if kind.is_morph() { bar } else { 0.0 } },
-                variations: variations(a, &sc, seed, t, end, single, engine),
+                variations: variations(a, &sc, seed, t, end, false, engine),
                 mods: mods(&sc, seed, engine),
                 genome: Some(g.clone()),
                 variant: true,
@@ -1078,7 +1079,9 @@ mod tests {
 
     #[test]
     fn phrase_variants_develop_generated_segments() {
-        let a = test_analysis();
+        // Auto mode with no track changes: one generated segment for the whole track.
+        let mut a = test_analysis();
+        a.track_changes.clear();
         let scenes = test_scenes();
         let block = |id: &str| crate::genome::Block {
             id: id.into(),
@@ -1098,8 +1101,10 @@ mod tests {
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
         let gen = |_, _, r| Some(Genome { regime: "calm".into(), ..genome::random(&blocks, r) });
-        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Single, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 1.0, vibe: None, genome_for: Some(&gen), blocks: Some(&blocks), gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
+        let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 1.0, vibe: None, genome_for: Some(&gen), blocks: Some(&blocks), gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
         let p = plan(&req).unwrap();
+        // Single mode keeps the one look.
+        assert_eq!(plan(&PlanRequest { mode: Mode::Single, ..req }).unwrap().segments.len(), 1);
         assert!(p.segments.len() > 10, "{}", p.segments.len());
         assert!(!p.segments[0].variant && p.segments[1..].iter().all(|s| s.variant));
         for w in p.segments.windows(2) {

@@ -26,7 +26,6 @@ pub struct Answers {
     pub no_grain: bool,
     pub layers: bool,
     pub look: Option<Look>,
-    pub images: Vec<PathBuf>,
     pub engine: Option<u32>,
 }
 
@@ -75,9 +74,6 @@ pub fn to_args(a: &Answers) -> Vec<String> {
     }
     if let Some(l) = &a.look {
         v.extend(["--look".into(), val(l)]);
-    }
-    for i in &a.images {
-        v.extend(["--image".into(), i.display().to_string()]);
     }
     if let Some(e) = a.engine {
         v.extend(["--engine".into(), e.to_string()]);
@@ -176,25 +172,16 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
         2 => 0.0,
         _ => 1.0,
     });
-    // Hand-made scenes are fixed: motion graphics and pictures only apply to generated ones.
+    // Hand-made scenes are fixed: motion graphics only apply to generated ones. (Your own pictures are
+    // CLI-only, --image: the wizard leaves them out until they look good.)
     if a.generated != Some(0.0) {
-        // Variety cuts to a new world on every drop anyway (except in single mode); elsewhere that comes with
+        // Single mode never cuts; Variety cuts to a new world on every drop anyway; Classic and AI cut with
         // the motion graphics.
-        let drops = if variety && a.mode != Some(Mode::Single) { "" } else { ", a new shot at each drop" };
+        let drops = if variety || a.mode == Some(Mode::Single) { "" } else { ", a new shot at each drop" };
         a.layers = Confirm::new(&format!("Add motion graphics (backdrops, HUD, text{drops})?"))
-            .with_help_message("Yes = scenery behind the visuals (sky, 3D sea world, your pictures) + HUD/text on top. No = abstract visuals only.")
+            .with_help_message("Yes = scenery behind the visuals (sky, 3D sea world) + HUD/text on top. No = abstract visuals only.")
             .with_default(d.layers)
             .prompt()?;
-
-        if (a.layers || a.vibe.is_some())
-            && Confirm::new("Show your own pictures in the video?")
-                .with_help_message("Shown as backdrops (full-frame photo) or floating cut-outs (transparent PNG). Up to 8.")
-                .with_default(!d.images.is_empty())
-                .prompt()?
-        {
-            let keep = !d.images.is_empty() && Confirm::new(&format!("Keep the {} picture(s) chosen before?", d.images.len())).with_default(true).prompt()?;
-            a.images = if keep { d.images.clone() } else { pick_many("Choose pictures", &["png", "jpg", "jpeg"])? };
-        }
     }
 
     let looks = vec!["Clean (recommended)", "VHS tape", "CRT screen", "Mono (green hologram)"];
@@ -296,16 +283,6 @@ fn pick(title: &str, exts: &[&str]) -> Result<PathBuf> {
     Ok(p)
 }
 
-fn pick_many(title: &str, exts: &[&str]) -> Result<Vec<PathBuf>> {
-    if let Some(ps) = rfd::FileDialog::new().set_title(title).add_filter("Pictures", exts).pick_files() {
-        for p in &ps {
-            println!("> {title}: {}", p.display());
-        }
-        return Ok(ps);
-    }
-    Ok(vec![pick(title, exts)?])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,12 +301,11 @@ mod tests {
             no_grain: true,
             layers: true,
             look: Some(Look::Vhs),
-            images: vec!["a.png".into()],
             engine: Some(1),
             ..Default::default()
         };
         let args = to_args(&a);
-        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain --layers --look vhs --image a.png --engine 1");
+        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain --layers --look vhs --engine 1");
         let cli = crate::Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args)).unwrap();
         assert_eq!(cli.audio.as_deref(), Some(std::path::Path::new("C:/My Music/mix.flac")));
         assert_eq!(cli.mode, Some(Mode::Single));
@@ -339,7 +315,6 @@ mod tests {
         assert_eq!(cli.vibe.as_deref(), Some("dark and liquid"));
         assert!(cli.no_grain && !cli.no_titles);
         assert!(cli.layers && cli.look == Some(Look::Vhs));
-        assert_eq!(cli.image, vec![PathBuf::from("a.png")]);
         assert_eq!(cli.engine, Some(1));
 
         let live = Answers { audio: "mix.flac".into(), start: Some("1:00".into()), quality: Some(Quality::Draft), ..Default::default() };

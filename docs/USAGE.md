@@ -62,8 +62,8 @@ Run `visualiser.exe` with no arguments, by double-clicking it or from the Start 
   - **Classic** (`--engine 1`): the original looks.
   - **AI-designed** (only when an AI service is set up): asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. See [AI features](#ai-features---setup-ai---vibe---forget-ai). Without an AI service the wizard prints a tip to run `visualiser --setup-ai`.
 - **Scenes?**: freshly generated (`--generated 1`), a mix of hand-made and freshly generated (`--generated 0.5`), or hand-made only (`--generated 0`, not offered for AI-designed). "(recommended)" is on freshly generated for Variety and on the mix for Classic and AI. See [Generated scenes](#generated-scenes---generated---keep).
-- **Motion graphics** (generated scenes only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only. With Classic and AI it also adds a new shot at each drop; Variety cuts to a new world on every drop either way, except in Single mode.
-- **Your own pictures** is asked after motion graphics or an AI description: pick PNG/JPG files (`--image`, up to 8). Full-frame photos become backdrops, transparent PNGs float as cut-outs.
+- **Motion graphics** (generated scenes only): Yes adds scenery behind the visuals (sky, 3D sea world) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only. With Classic and AI in Auto mode it also adds a new shot at each drop; Variety cuts to a new world on every drop either way. Single mode never cuts.
+- **Your own pictures** are not asked in guided mode (they rarely look good yet). Use `--image` on the command line.
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
 - `Esc` quits at any question.
@@ -581,7 +581,7 @@ Notes:
 
 Engine 2 also plans a whole show, not only single looks:
 
-- **Drop resets:** at a drop the picture goes black, then a new look rebuilds from nothing. Single mode (`--mode single`) keeps one look for the whole track, so it gets drop resets only with `--layers`.
+- **Drop resets:** at a drop the picture goes black, then a new look rebuilds from nothing. Single mode (`--mode single`) keeps one look for the whole track: no drop resets, no new shots (not even with `--layers` or an AI storyboard) and no phrase variants. It evolves through its own variations only.
 - **Phrase variants:** every 16 or 32 bars a look develops into a variant (a changed fold, framing or palette). Variants are not chapters. They only vary over the frozen engine-2 block library, so new block files on disk don't change seeds, and they only apply to engine-2 looks. `--reroll N` of a variant re-rolls its parent segment. Locking a generated segment, or any of its variants, locks the whole look including its variants.
 - **Transition styles:** crossfade, luma wipe, iris zoom-through, melt or tiles. The seed picks.
 - **Comp framings:** mirror, kaleido, slit-scan and time echo, applied to the display only (the feedback loop doesn't see them). Slit-scan rows lag in time; the echo leaves ghost trails.
