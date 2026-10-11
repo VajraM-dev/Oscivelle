@@ -57,7 +57,7 @@ Run `visualiser.exe` with no arguments, by double-clicking it or from the Start 
   - **Quit** (or `Esc`).
 - Choosing **Full video** or **Quick 30-second test file** directly renders straight away, with no menu.
 
-- **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
+- **Visual style** has three choices: freshly generated (`--generated 1`), a mix of hand-made and freshly generated scenes (`--generated 0.5`), or hand-made only (`--generated 0`). "(recommended)" is on freshly generated, or on the mix when your saved answer to **Visuals?** is Classic (engine 1). See [Generated scenes](#generated-scenes---generated---keep).
 - **Motion graphics** (generated styles only): Yes adds scenery behind the visuals (sky, 3D sea world, your pictures) and sometimes a HUD/grid/text on top (`--layers`). No keeps abstract visuals only.
 - **Who designs the visuals** is asked only when an AI service is set up. "Core engine only" is free and works offline. "Let AI design it" asks for a description (`--vibe`) and uses your AI credit, more when an image model paints pictures. Without an AI service it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
 - **Visuals?** (generated styles, core engine only): Variety (recommended, `--engine 2`: new folds, moods, fractals, glitch) or Classic (`--engine 1`: the original looks). See [Engine 2](#engine-2---engine-2).
@@ -502,7 +502,7 @@ Besides the hand-made scenes, the program can build new ones from a library of p
 
 | Option | Values | Default | Description |
 |---|---|---|---|
-| `--generated <SHARE>` | `0` to `1` | the saved plan's value, else `0.5` | Share of the auto-picked segments that get a generated scene. `0` = only hand-made scenes, `1` = all generated. |
+| `--generated <SHARE>` | `0` to `1` | the saved plan's value, else `1` for new engine-2 projects (`0.5` for engine 1) | Share of the auto-picked segments that get a generated scene. `0` = only hand-made scenes, `1` = all generated. Saved projects keep their own value. |
 | `--keep <N>` | segment index (0-based, as in `plan.json`) | none | Copies segment N's generated scene into `scenes\` as a normal scene. Doesn't render. |
 
 - Each generated scene is chosen by scoring candidates on **that segment's own music**. The judge renders a few seconds of each candidate small and rejects the dull, the flooded (washed to white), the noisy (TV static) and the deaf (not reacting to the kick). It catches bad ones, not great ones, so you pick favourites with `--keep`.
@@ -574,6 +574,19 @@ Notes:
 - **Re-analysis:** after upgrading, each project is analysed once again (the analysis format gained snare onsets). This applies to all runs, not just engine 2.
 - **Flash limit:** strobe and invert flashes are limited to at most one per bar, under the 3 Hz limit in WCAG.
 - `--vibe` keeps engine-1 looks.
+
+### Shows
+
+Engine 2 also plans a whole show, not only single looks:
+
+- **Drop resets:** at a drop the picture goes black, then a new look rebuilds from nothing.
+- **Phrase variants:** every 16 or 32 bars a look develops into a variant (a changed fold, framing or palette). Variants are not chapters. They only vary over the frozen engine-2 block library, so new block files on disk don't change seeds, and they only apply to engine-2 looks. `--reroll N` of a variant re-rolls its parent segment. Locking a generated segment, or any of its variants, locks the whole look including its variants.
+- **Transition styles:** crossfade, luma wipe, iris zoom-through, melt or tiles. The seed picks.
+- **Comp framings:** mirror, kaleido, slit-scan and time echo, applied to the display only (the feedback loop doesn't see them). Slit-scan rows lag in time; the echo leaves ghost trails.
+- **Recipes:** `stateless` (no feedback buffer, the picture is drawn fresh each frame) and `dual` (two emitters at once).
+- **Default share:** `--generated` defaults to `1` for new engine-2 projects (`0.5` for engine 1). Saved projects keep theirs.
+- **Memory:** a history ring of past frames feeds slit-scan and echo, about 133 MB at 1080p and 236 MB at 1440p. It is only allocated when a look uses one, and is cleared on a reset cut and on preview seek.
+- **Planning takes a bit longer:** one judged look per drop.
 
 ```
 visualiser.exe song.wav --engine 2 --generated 1 --replan --preview 1:00 --quality draft --seed 3
