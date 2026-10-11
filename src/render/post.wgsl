@@ -51,3 +51,10 @@ fn fs_up(in: VsOut) -> @location(0) vec4<f32> {
     c += 2.0 * (s(in.uv + vec2<f32>(-h.x, h.y)) + s(in.uv + h));
     return vec4<f32>(c / 12.0, 1.0);
 }
+
+// History ring write: the feedback frame, squeezed from HDR into 0..1 for the Rgba8 ring (prelude hist() undoes it).
+@fragment
+fn fs_hist(in: VsOut) -> @location(0) vec4<f32> {
+    let c = s(in.uv);
+    return vec4<f32>(c / (1.0 + c), 1.0);
+}

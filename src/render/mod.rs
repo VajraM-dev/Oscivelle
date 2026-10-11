@@ -66,7 +66,7 @@ pub fn render_video(job: &RenderJob) -> Result<()> {
     let instance = wgpu::Instance::default();
     let (_adapter, device, queue) = engine::gpu(&instance, job.cpu, None)?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut eng = Engine::new(&device, &queue, job.scenes, &job.scenes_dir, job.quality, job.width, job.height, format, &crate::plates::load_all(&job.plan.plates));
+    let mut eng = Engine::new(&device, &queue, job.scenes, &job.scenes_dir, job.quality, job.width, job.height, format, &crate::plates::load_all(&job.plan.plates), needs_history(job.plan, job.scenes));
     eprintln!("sim {}x{} -> output {}x{} ({:?})", eng.sim.0, eng.sim.1, job.width, job.height, job.quality);
     let out_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("out"),
@@ -176,7 +176,13 @@ fn render_chunk(
     // so the feedback doesn't start from black. Capped at t=0: never steps before the file start.
     if t0 > 0.0 {
         for n in -PREROLL_STEPS.min((t0 * SIM_HZ as f64) as i64)..0 {
-            eng.step(&fs_at(t0 + n as f64 / SIM_HZ as f64), None)?;
+            let t = t0 + n as f64 / SIM_HZ as f64;
+            eng.step(&fs_at(t), None)?;
+            // The display history fills exactly as in a continuous render: once per output frame, after its
+            // last sub-step (t0 is frame-aligned). 20 s of pre-roll covers the 64-frame ring.
+            if n.rem_euclid(SUB as i64) == SUB as i64 - 1 {
+                eng.push_history(t);
+            }
         }
     }
     let mut pending: VecDeque<Pending> = VecDeque::new();
@@ -192,6 +198,7 @@ fn render_chunk(
                 eng.step(&s, w)?;
                 fs = Some(s);
             }
+            eng.push_history(t0 + (SUB * f + SUB - 1) as f64 / SIM_HZ as f64);
             let slot = (f as usize) % SLOTS;
             if pending.len() == SLOTS {
                 flush(gpu, pending.pop_front().unwrap(), job, &mut stdin)?;
@@ -289,6 +296,14 @@ fn find_ffmpeg() -> PathBuf {
     beside_exe("ffmpeg.exe").unwrap_or_else(|| PathBuf::from("ffmpeg"))
 }
 
+/// A look in the plan reads the display history (its comp block calls hist()), so the engine keeps the ring.
+pub fn needs_history(plan: &Plan, scenes: &[Scene]) -> bool {
+    scenes
+        .iter()
+        .filter(|s| plan.segments.iter().any(|g| g.scene == s.id))
+        .any(|s| std::fs::read_to_string(scenes::layers_path(s)).is_ok_and(|src| src.contains("hist(")))
+}
+
 /// FNV-1a over plan + settings + analysis + used shader sources (stable across builds, unlike DefaultHasher).
 fn job_hash(job: &RenderJob) -> Result<u64> {
     let mut data = serde_json::to_vec(job.plan)?;
@@ -300,6 +315,7 @@ fn job_hash(job: &RenderJob) -> Result<u64> {
     data.extend(serde_json::to_vec(job.analysis)?);
     data.extend(engine::POST_WGSL.bytes());
     data.extend(engine::FINISH_WGSL.bytes());
+    data.extend(engine::TRANS_WGSL.bytes());
     // Only scenes this plan uses, so editing another scene doesn't throw away finished chunks.
     for s in job.scenes.iter().filter(|s| job.plan.segments.iter().any(|g| g.scene == s.id)) {
         data.extend(scenes::shader_source(&job.scenes_dir, s)?.bytes());

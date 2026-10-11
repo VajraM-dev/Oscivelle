@@ -148,7 +148,7 @@ impl Judge {
         let instance = wgpu::Instance::default();
         let (_adapter, device, queue) = engine::gpu(&instance, cpu, None)?;
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut engine = Engine::new(&device, &queue, scenes, scenes_dir, Quality::Draft, W, H, format, &[]);
+        let mut engine = Engine::new(&device, &queue, scenes, scenes_dir, Quality::Draft, W, H, format, &[], false);
         engine.layers = false; // Backdrops are art, not music: score the feedback only (layer passes still compile).
         let out_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("judge"),

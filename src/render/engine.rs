@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const POST_WGSL: &str = concat!(include_str!("common.wgsl"), include_str!("post.wgsl"));
 pub const FINISH_WGSL: &str = concat!(include_str!("common.wgsl"), include_str!("finish.wgsl"));
+pub const TRANS_WGSL: &str = concat!(include_str!("common.wgsl"), include_str!("trans.wgsl"));
+/// Output frames the display history keeps (comp blocks' hist(); ~2.1 s at OUT_FPS).
+pub const HIST_LEN: u32 = 64;
+/// Ring format: half output size, 8-bit (64 frames ≈ 133 MB at 1080p, 236 MB at 1440p).
+const HIST: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// Picks the adapter (high performance, else software fallback; `cpu` forces WARP/fallback).
 pub fn gpu(
@@ -91,11 +96,19 @@ pub struct Engine {
     layer_bg: [wgpu::BindGroup; 2],
     /// Run layer passes (the judge turns this off: it scores the feedback, not the backdrop).
     pub layers: bool,
+    /// Display history ring, one view per layer (output frame mod HIST_LEN); None = not kept (no look reads hist()).
+    hist: Option<Vec<wgpu::TextureView>>,
+    hist_pl: wgpu::RenderPipeline,
+    /// Styled morph (trans.wgsl): B from scratch, masked over fb[next].
+    trans_pl: wgpu::RenderPipeline,
+    tbuf: wgpu::Buffer,
+    trans_bg: wgpu::BindGroup,
 }
 
 impl Engine {
     /// `out_format` is the finish target format (Rgba8Unorm for video, the surface format for preview).
     /// `plates`: the plan's pictures (each PLATE_W x PLATE_H RGBA8 sRGB, see plates.rs).
+    /// `history`: keep the display history ring (some look's comp block calls hist()).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
@@ -107,6 +120,7 @@ impl Engine {
         height: u32,
         out_format: wgpu::TextureFormat,
         plates: &[Vec<u8>],
+        history: bool,
     ) -> Self {
         let final_q = quality == Quality::Final;
         let ss = if final_q { 1.5 } else { 1.0 };
@@ -186,7 +200,7 @@ impl Engine {
         let bgl = |entries: &[wgpu::BindGroupLayoutEntry]| {
             d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries })
         };
-        let scene_bgl = bgl(&[uniform_e(0), tex_e(1), samp_e(2), arr_e(3), samp_e(4)]);
+        let scene_bgl = bgl(&[uniform_e(0), tex_e(1), samp_e(2), arr_e(3), samp_e(4), arr_e(5)]);
         let tex_bgl = bgl(&[tex_e(0), samp_e(1)]);
         let finish_bgl = bgl(&[uniform_e(0), tex_e(1), tex_e(2), samp_e(3)]);
         let layout = |l: &wgpu::BindGroupLayout| {
@@ -199,6 +213,8 @@ impl Engine {
         let scene_layout = layout(&scene_bgl);
         let tex_layout = layout(&tex_bgl);
         let finish_layout = layout(&finish_bgl);
+        let trans_bgl = bgl(&[uniform_e(0), tex_e(1), samp_e(2)]);
+        let trans_layout = layout(&trans_bgl);
 
         let buf = |size: usize| {
             d.create_buffer(&wgpu::BufferDescriptor {
@@ -210,12 +226,38 @@ impl Engine {
         };
         let ubuf = [buf(size_of::<SceneUniforms>()), buf(size_of::<SceneUniforms>())];
         let fbuf = buf(size_of::<FinishUniforms>());
+        let tbuf = buf(16);
         let plates = plate_array(d, queue, plates);
+        // History ring (a 1x1x1 dummy when not kept: the scene layout always binds one).
+        let (hw, hh, hn) = if history { ((width / 2).max(1), (height / 2).max(1), HIST_LEN) } else { (1, 1, 1) };
+        let hist_tex = d.create_texture(&wgpu::TextureDescriptor {
+            label: Some("history"),
+            size: wgpu::Extent3d { width: hw, height: hh, depth_or_array_layers: hn },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: HIST,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let hist_arr = hist_tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+        let hist = history.then(|| {
+            (0..hn)
+                .map(|i| {
+                    hist_tex.create_view(&wgpu::TextureViewDescriptor {
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        base_array_layer: i,
+                        array_layer_count: Some(1),
+                        ..Default::default()
+                    })
+                })
+                .collect()
+        });
 
         use wgpu::BindingResource as R;
         // Scene / layer-pass bind group: uniforms, source texture (prev frame or accum), mirror sampler, plates, clamp sampler.
         let scene_bind = |u: &wgpu::Buffer, src| {
-            bg(d, &scene_bgl, &[u.as_entire_binding(), R::TextureView(src), R::Sampler(&mirror), R::TextureView(&plates), R::Sampler(&clamp)])
+            bg(d, &scene_bgl, &[u.as_entire_binding(), R::TextureView(src), R::Sampler(&mirror), R::TextureView(&plates), R::Sampler(&clamp), R::TextureView(&hist_arr)])
         };
         let scene_bg = [0, 1].map(|u| [0, 1].map(|f| scene_bind(&ubuf[u], &fb[f])));
         let layer_bg = [0, 1].map(|u| scene_bind(&ubuf[u], &accum));
@@ -228,6 +270,7 @@ impl Engine {
         let finish_bg = [&accum, &comp].map(|src| {
             bg(d, &finish_bgl, &[fbuf.as_entire_binding(), R::TextureView(src), R::TextureView(&bloom[0]), R::Sampler(&clamp)])
         });
+        let trans_bg = bg(d, &trans_bgl, &[tbuf.as_entire_binding(), R::TextureView(&scratch), R::Sampler(&clamp)]);
 
         let post = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post"),
@@ -237,6 +280,10 @@ impl Engine {
             label: Some("finish"),
             source: wgpu::ShaderSource::Wgsl(FINISH_WGSL.into()),
         });
+        let trans = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("trans"),
+            source: wgpu::ShaderSource::Wgsl(TRANS_WGSL.into()),
+        });
         let blend = |src, dst| wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
         let constant = blend(wgpu::BlendFactor::Constant, wgpu::BlendFactor::OneMinusConstant);
         let add = blend(wgpu::BlendFactor::One, wgpu::BlendFactor::One);
@@ -245,6 +292,9 @@ impl Engine {
         let down_pl = pipeline(d, &post, &tex_layout, "fs_down", HDR, None);
         let up_pl = pipeline(d, &post, &tex_layout, "fs_up", HDR, Some(wgpu::BlendState { color: add, alpha: add }));
         let finish_pl = pipeline(d, &finish, &finish_layout, "fs_main", out_format, None);
+        let over = blend(wgpu::BlendFactor::SrcAlpha, wgpu::BlendFactor::OneMinusSrcAlpha);
+        let trans_pl = pipeline(d, &trans, &trans_layout, "fs_trans", HDR, Some(wgpu::BlendState { color: over, alpha: over }));
+        let hist_pl = pipeline(d, &post, &tex_layout, "fs_hist", HIST, None);
 
         let e = Self {
             device: device.clone(),
@@ -280,6 +330,11 @@ impl Engine {
             comp_bg,
             layer_bg,
             layers: true,
+            hist,
+            hist_pl,
+            trans_pl,
+            tbuf,
+            trans_bg,
         };
         e.reset();
         e
@@ -378,12 +433,22 @@ impl Engine {
         let (cur, next) = (self.cur, 1 - self.cur);
         self.queue.write_buffer(&self.ubuf[0], 0, bytemuck::bytes_of(&fs.a));
         let mut enc = self.device.create_command_encoder(&Default::default());
+        if fs.reset {
+            // A Reset cut: the new look starts from black.
+            drop(begin(&mut enc, &self.fb[cur], true));
+        }
         draw(&mut enc, &self.fb[next], true, pa, &self.scene_bg[0][cur], 1.0);
         if let Some((id_b, ub)) = &fs.b {
             if let Some(pb) = self.pipelines.get(id_b) {
                 self.queue.write_buffer(&self.ubuf[1], 0, bytemuck::bytes_of(ub));
                 draw(&mut enc, &self.scratch, true, pb, &self.scene_bg[1][cur], 1.0);
-                draw(&mut enc, &self.fb[next], false, &self.copy_pl, &self.scratch_bg, fs.mix as f64);
+                if fs.wipe == 0 {
+                    draw(&mut enc, &self.fb[next], false, &self.copy_pl, &self.scratch_bg, fs.mix as f64);
+                } else {
+                    let t = [fs.mix, fs.wipe as f32, self.sim.0 as f32 / self.sim.1 as f32, 0.0];
+                    self.queue.write_buffer(&self.tbuf, 0, bytemuck::bytes_of(&t));
+                    draw(&mut enc, &self.fb[next], false, &self.trans_pl, &self.trans_bg, 1.0);
+                }
             }
         }
         if let Some(w) = accum_weight {
@@ -392,6 +457,15 @@ impl Engine {
         self.queue.submit([enc.finish()]);
         self.cur = next;
         res
+    }
+
+    /// Stores the newest feedback frame as output frame floor(t · OUT_FPS) of the history ring (comp blocks
+    /// read it with hist()). Call once per output frame, after its last sub-step; a no-op without a ring.
+    pub fn push_history(&self, t: f64) {
+        let Some(views) = &self.hist else { return };
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        draw(&mut enc, &views[hist_layer(t, views.len())], true, &self.hist_pl, &self.fb_bg[self.cur], 1.0);
+        self.queue.submit([enc.finish()]);
     }
 
     /// Layer pass (backdrop + feedback + overlay) into `comp`; false when neither scene has one.
@@ -450,6 +524,11 @@ impl Engine {
         self.queue.write_buffer(&self.fbuf, 0, bytemuck::bytes_of(&u));
         draw(enc, target, true, &self.finish_pl, &self.finish_bg[src], 1.0);
     }
+}
+
+/// Ring layer of the output frame at `t` (prelude hist() derives the same index from time()).
+fn hist_layer(t: f64, n: usize) -> usize {
+    ((t * OUT_FPS as f64).floor() as i64).rem_euclid(n as i64) as usize
 }
 
 /// Bind group from `res`, bound at 0, 1, 2, ... in order.
@@ -571,7 +650,7 @@ mod tests {
         let instance = wgpu::Instance::default();
         let (_a, device, queue) = gpu(&instance, false, None).unwrap();
         for q in [Quality::Draft, Quality::Final] {
-            let mut e = Engine::new(&device, &queue, &scenes, &dir, q, 320, 180, wgpu::TextureFormat::Rgba8Unorm, &[]);
+            let mut e = Engine::new(&device, &queue, &scenes, &dir, q, 320, 180, wgpu::TextureFormat::Rgba8Unorm, &[], false);
             let mut u = SceneUniforms::default();
             u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 0.0, 1.0 / SIM_HZ as f32];
             u.beat[0] = 1.0;
@@ -602,7 +681,7 @@ mod tests {
         // Every shipped scene compiles against the real prelude + common.wgsl.
         let dir = Path::new("scenes");
         let real = scenes::load_all(dir).unwrap();
-        let mut e = Engine::new(&device, &queue, &real, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[]);
+        let mut e = Engine::new(&device, &queue, &real, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[], false);
         for s in &real {
             e.compile(&s.id).unwrap();
         }
@@ -621,7 +700,7 @@ mod tests {
                 }
             }
         }
-        let mut e = Engine::new(&device, &queue, &gen, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[]);
+        let mut e = Engine::new(&device, &queue, &gen, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[], false);
         for (s, name) in gen.iter().zip(&names) {
             e.compile(&s.id).unwrap_or_else(|err| panic!("{name}: {err:#}"));
         }
@@ -649,7 +728,7 @@ mod tests {
             }
         }
         assert!(!lay.is_empty(), "no layer blocks found");
-        let mut e = Engine::new(&device, &queue, &lay, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[vec![255; (PLATE_W * PLATE_H * 4) as usize]]);
+        let mut e = Engine::new(&device, &queue, &lay, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[vec![255; (PLATE_W * PLATE_H * 4) as usize]], false);
         for s in &lay {
             e.compile(&s.id).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
         }
@@ -692,7 +771,7 @@ mod tests {
             };
             v2.push(crate::genome::write(&g, &b2, &gen_dir).unwrap());
         }
-        let mut e = Engine::new(&device, &queue, &v2, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[]);
+        let mut e = Engine::new(&device, &queue, &v2, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[], false);
         for s in &v2 {
             e.compile(&s.id).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
             let mut u = SceneUniforms::default();
@@ -702,5 +781,52 @@ mod tests {
             e.step(&fs, Some(1.0)).unwrap();
         }
         assert_eq!(b2.space.len(), 6, "all space blocks present");
+
+        // Engine 2, phase 2: comp layer passes (hist() on a real ring), every recipe, every morph style and a
+        // reset step run without validation errors (wgpu panics on one).
+        let (nc, nt) = (b2.comp.len() + 1, crate::genome::TEMPLATES.len() + 1);
+        let mut v3 = Vec::new();
+        for i in 0..nc.max(nt).max(5) {
+            let template = if i % nt == 0 { String::new() } else { crate::genome::TEMPLATES[i % nt - 1].to_string() };
+            let g = crate::genome::Genome {
+                motion: b2.motion[i % b2.motion.len()].id.clone(),
+                emitter: b2.emitter[i % b2.emitter.len()].id.clone(),
+                emitter_b: if template == "dual" { b2.emitter[(i + 1) % b2.emitter.len()].id.clone() } else { String::new() },
+                colour: b2.colour[i % b2.colour.len()].id.clone(),
+                palette: b2.palettes[0].clone(),
+                space: b2.space[i % b2.space.len()].id.clone(),
+                regime: "maximal".into(),
+                template,
+                comp: if i % nc == 0 { String::new() } else { b2.comp[i % nc - 1].id.clone() },
+                ..Default::default()
+            };
+            v3.push(crate::genome::write(&g, &b2, &gen_dir).unwrap());
+        }
+        assert_eq!(b2.comp.len(), 4, "all comp blocks present");
+        let mut e = Engine::new(&device, &queue, &v3, dir, Quality::Draft, 64, 36, wgpu::TextureFormat::Rgba8Unorm, &[], true);
+        for (i, s) in v3.iter().enumerate() {
+            e.compile(&s.id).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
+            let mut u = SceneUniforms::default();
+            u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0 + i as f32 / 30.0, 1.0 / SIM_HZ as f32];
+            u.p0 = [1.0; 4];
+            let b = Some((v3[(i + 1) % v3.len()].id.clone(), u));
+            let fs = FrameState { scene_a: s.id.clone(), a: u, b, mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default(), wipe: (i % 5) as u32, reset: i % 2 == 0 };
+            e.step(&fs, Some(1.0)).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
+            e.push_history(u.res_time[2] as f64);
+            let mut enc = device.create_command_encoder(&Default::default());
+            e.finish(&mut enc, &out.create_view(&Default::default()), &fs, false, false);
+            queue.submit([enc.finish()]);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    }
+
+    /// A render pushes after each output frame's last sub-step (t0 + (2f + 1) / 60): consecutive frames take
+    /// consecutive layers and wrap at the ring size, also for a pre-roll's negative frames.
+    #[test]
+    fn history_layers_follow_output_frames() {
+        let at = |f: i64| hist_layer(10.0 + (2 * f + 1) as f64 / SIM_HZ as f64, HIST_LEN as usize);
+        for f in -70..70 {
+            assert_eq!(at(f + 1), (at(f) + 1) % HIST_LEN as usize, "frame {f}");
+        }
     }
 }

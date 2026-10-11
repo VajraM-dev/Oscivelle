@@ -25,6 +25,7 @@ struct U {
 @group(0) @binding(2) var prev_samp: sampler; // linear, mirror-repeat
 @group(0) @binding(3) var plate_tex: texture_2d_array<f32>; // the plan's pictures (linear rgba)
 @group(0) @binding(4) var plate_samp: sampler;               // linear, clamp
+@group(0) @binding(5) var hist_tex: texture_2d_array<f32>; // display history ring (comp blocks: hist())
 
 const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
@@ -79,6 +80,16 @@ fn plate(i: i32, p: vec2<f32>) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     return textureSampleLevel(plate_tex, plate_samp, uv, i, 0.0);
+}
+
+// Display history (comp blocks only): the feedback `k` output frames ago (0..63, ~2 s), at uv, HDR.
+// Black until the ring has filled, and in looks whose comp block doesn't call it (1-layer dummy ring).
+// 30 = OUT_FPS: the engine stores output frame floor(time * 30) in layer (frame mod layers).
+fn hist(uv: vec2<f32>, k: f32) -> vec3<f32> {
+    let n = i32(textureNumLayers(hist_tex));
+    let i = i32(floor(time() * 30.0)) - i32(clamp(k, 0.0, f32(n - 1)));
+    let x = textureSampleLevel(hist_tex, plate_samp, uv, ((i % n) + n) % n, 0.0).rgb;
+    return x / max(vec3<f32>(1.0) - x, vec3<f32>(0.004));
 }
 
 // uv (0..1) <-> centred coords: y in -1..1, x in -aspect..aspect.
