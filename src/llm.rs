@@ -6,13 +6,16 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::Duration;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct AiConfig {
     /// e.g. "https://api.openai.com/v1" or "http://localhost:11434/v1".
     pub base_url: String,
     /// Empty for local servers that need no key.
     pub key: String,
     pub model: String,
+    /// Image model id for AI pictures ("" = none; OpenAI gpt-image models).
+    #[serde(default)]
+    pub image_model: String,
 }
 
 const SERVICE: &str = "visualiser";
@@ -31,11 +34,13 @@ pub fn endpoint(c: &AiConfig) -> String {
 pub fn load() -> Option<AiConfig> {
     let env = |k| std::env::var(k).ok().filter(|v: &String| !v.trim().is_empty());
     let model = env("VISUALISER_AI_MODEL");
+    let image_model = env("VISUALISER_IMAGE_MODEL");
     let stored = keyring::Entry::new(SERVICE, ACCOUNT).ok().and_then(|e| e.get_password().ok());
     if let Some(s) = stored {
         match serde_json::from_str::<AiConfig>(&s) {
             Ok(mut c) => {
                 c.model = model.unwrap_or(c.model);
+                c.image_model = image_model.unwrap_or(c.image_model);
                 return Some(c);
             }
             Err(_) => {
@@ -52,7 +57,7 @@ pub fn load() -> Option<AiConfig> {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| eprintln!("warning: OPENAI_API_KEY/OPENAI_BASE_URL is set but VISUALISER_AI_MODEL isn't; set it to use the env vars"));
     }
-    Some(AiConfig { base_url, key: env("OPENAI_API_KEY").unwrap_or_default(), model: model? })
+    Some(AiConfig { base_url, key: env("OPENAI_API_KEY").unwrap_or_default(), model: model?, image_model: image_model.unwrap_or_default() })
 }
 
 fn save(c: &AiConfig) -> Result<()> {
@@ -99,41 +104,70 @@ fn completion_tokens(body: &mut Value) -> bool {
     }
 }
 
-/// POST a chat-completions request; returns the JSON body or an `ApiError`.
-fn post(c: &AiConfig, body: &Value) -> Result<Value> {
+/// One POST to `url`; the JSON body on 200, else an `ApiError` with the service's message (never the key).
+fn send(c: &AiConfig, url: &str, body: &Value) -> Result<Value> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(600))) // --author asks for up to 8k tokens; local CPU models are slow
         .http_status_as_error(false)
         .build()
         .into();
+    let mut req = agent.post(url);
+    if !c.key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", c.key.trim()));
+    }
+    let mut resp = req.send_json(body).map_err(|e| anyhow!("AI request failed: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if status == 200 {
+        return Ok(v);
+    }
+    // Non-JSON errors (e.g. a plain 404 from a base URL missing /v1) are shown raw.
+    let raw: String = text.trim().chars().take(200).collect();
+    let msg = v.pointer("/error/message").or(v.pointer("/message")).or(v.pointer("/error")).and_then(Value::as_str).unwrap_or(&raw);
+    let msg = if msg.is_empty() { "no details" } else { msg };
+    Err(ApiError { status, msg: msg.into() }.into())
+}
+
+/// POST a chat-completions request; returns the JSON body or an `ApiError`.
+fn post(c: &AiConfig, body: &Value) -> Result<Value> {
     let mut body = body.clone();
     if COMPLETION_TOKENS.load(Relaxed) {
         completion_tokens(&mut body);
     }
-    loop {
-        let mut req = agent.post(&endpoint(c));
-        if !c.key.trim().is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", c.key.trim()));
-        }
-        let mut resp = req.send_json(&body).map_err(|e| anyhow!("AI request failed: {e}"))?;
-        let status = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
-        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        if status == 200 {
-            return Ok(v);
-        }
-        // Non-JSON errors (e.g. a plain 404 from a base URL missing /v1) are shown raw.
-        let raw: String = text.trim().chars().take(200).collect();
-        let msg = v.pointer("/error/message").or(v.pointer("/message")).or(v.pointer("/error")).and_then(Value::as_str).unwrap_or(&raw);
-        let msg = if msg.is_empty() { "no details" } else { msg };
+    match send(c, &endpoint(c), &body) {
         // OpenAI reasoning models reject `max_tokens`; local servers only know `max_tokens`.
         // Remembered, so only the first request to such a model is wasted.
-        if status == 400 && msg.contains("max_completion_tokens") && completion_tokens(&mut body) {
+        Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.status == 400 && a.msg.contains("max_completion_tokens")) && completion_tokens(&mut body) => {
             COMPLETION_TOKENS.store(true, Relaxed);
-            continue;
+            send(c, &endpoint(c), &body)
         }
-        return Err(ApiError { status, msg: msg.into() }.into());
+        r => r,
     }
+}
+
+/// The image-generation URL of the same service (".../v1/images/generations").
+fn images_endpoint(c: &AiConfig) -> String {
+    let base = c.base_url.trim().trim_end_matches('/');
+    format!("{}/images/generations", base.strip_suffix("/chat/completions").unwrap_or(base))
+}
+
+/// One 1536x1024 picture from the image model (OpenAI gpt-image models); PNG bytes.
+/// `transparent`: a cut-out on a transparent background.
+pub fn image(c: &AiConfig, prompt: &str, transparent: bool) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    let body = json!({
+        "model": c.image_model.trim(),
+        "prompt": prompt,
+        "size": "1536x1024",
+        "quality": "medium",
+        "background": if transparent { "transparent" } else { "opaque" },
+        "output_format": "png",
+        "n": 1
+    });
+    let v = send(c, &images_endpoint(c), &body)?;
+    let b64 = v.pointer("/data/0/b64_json").and_then(Value::as_str).context("the image reply had no picture")?;
+    Ok(base64::engine::general_purpose::STANDARD.decode(b64)?)
 }
 
 /// One JSON answer matching `schema`. First as a strict structured output (`response_format`
@@ -267,13 +301,21 @@ pub fn setup() -> Result<()> {
         .to_string();
     let key = Password::new("API key (Enter for none, e.g. a local server):").with_display_mode(PasswordDisplayMode::Masked).without_confirmation().prompt()?;
     let model = Text::new("Model id:").with_validator(inquire::required!("a model id is needed")).prompt()?.trim().to_string();
-    let c = AiConfig { base_url, key: key.trim().to_string(), model };
+    let image_model = Text::new("Image model id for AI pictures (Enter to skip, e.g. gpt-image-1):")
+        .with_help_message("OpenAI image models only. Each picture costs a few cents; pictures are cached per prompt.")
+        .prompt()?
+        .trim()
+        .to_string();
+    let c = AiConfig { base_url, key: key.trim().to_string(), model, image_model };
     print!("Testing {} with {} ... ", endpoint(&c), c.model);
     std::io::Write::flush(&mut std::io::stdout())?;
     // Same path as the real features, so a model without structured output or tool calling fails here, not later.
     let schema = json!({"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]});
     call_tool(&c, "You are testing a connection.", "Reply with ok = true.", "submit", "Submit the answer.", schema, 2000)?;
     println!("works.");
+    if !c.image_model.is_empty() {
+        println!("Image model {} saved (not test-called: it costs money; the first --vibe that asks for a picture tests it).", c.image_model);
+    }
     save(&c)?;
     println!("Saved. In guided mode you'll now be asked to describe the vibe; on the command line use --vibe \"...\".");
     Ok(())
@@ -285,9 +327,11 @@ mod tests {
 
     #[test]
     fn endpoints_and_tool_parsing() {
-        let c = |u: &str| AiConfig { base_url: u.into(), key: String::new(), model: "m".into() };
+        let c = |u: &str| AiConfig { base_url: u.into(), key: String::new(), model: "m".into(), ..Default::default() };
         assert_eq!(endpoint(&c("https://api.openai.com/v1/")), "https://api.openai.com/v1/chat/completions");
         assert_eq!(endpoint(&c("http://localhost:11434/v1/chat/completions")), "http://localhost:11434/v1/chat/completions");
+        assert_eq!(images_endpoint(&c("https://api.openai.com/v1/")), "https://api.openai.com/v1/images/generations");
+        assert_eq!(images_endpoint(&c("https://api.openai.com/v1/chat/completions")), "https://api.openai.com/v1/images/generations");
         let call = |args: Value| json!({"choices": [{"message": {"tool_calls": [
             {"type": "function", "function": {"name": "other", "arguments": "{}"}},
             {"type": "function", "function": {"name": "submit", "arguments": args}},
