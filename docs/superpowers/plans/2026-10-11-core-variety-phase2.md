@@ -49,7 +49,7 @@ How it works:
 
 `T2 Standard · no web frontend (CLI + GPU shaders; design gate n/a) · review: /simplify → /review`
 
-- **Branch:** `feature/core-variety-2`, created from `feature/core-variety` HEAD @ `231afa2` (`main` is still @ `676e3ab` and doesn't have Phase 1 merged). Never commit to `main` or `feature/core-variety`; the user merges.
+- **Branch:** `feature/core-variety-2`, created from `main` @ `7a6d6e4` (Phase 1 merged; the saved-engine-2 framemd5 base is still `231afa2`). Never commit to `main`; the user merges.
 - **Untracked AI blocks:** `scenes/blocks/*runner*`, `*trippy*`, `colour_cube_mono.*` and `emit_beat_cube.*` (10 files) are AI-written and untracked. **Never commit or delete them.** Stage files by explicit path only; never `git add -A` or `git add .`. Engine pinning already excludes them.
 - **Orchestrator** plans, dispatches, joins and commits. Subagents do the work and **don't commit** (parallel commits in one worktree race on the index lock). Independent tasks in one wave go out as multiple `Agent` calls **in a single message**.
 - **Model routing:** `opus` for engine, render, genome, director, main/evolve wiring and every shader block. `sonnet` for docs. No Haiku.
