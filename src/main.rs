@@ -93,7 +93,7 @@ struct Cli {
     /// Motion graphics on generated scenes: a backdrop (sky, raymarched sea world, your --image), sometimes a HUD/grid/text overlay, and a new shot at each drop.
     #[arg(long)]
     layers: bool,
-    /// A picture the looks can show (with --layers); repeatable, up to 8.
+    /// A picture the looks can show (with --layers or --vibe); repeatable, up to 8.
     #[arg(long)]
     image: Vec<PathBuf>,
     /// Finishing look for the whole video: clean, vhs, crt or mono.
@@ -203,7 +203,7 @@ fn run(cli: Cli) -> Result<()> {
     // A vibe or --layers only steers generated scenes, so they imply some.
     let generated = if (cli.vibe.is_some() || cli.layers) && generated == 0.0 { 1.0 } else { generated };
     // Absolute, so the saved plan still finds them from another working directory.
-    let plates = cli
+    let user_plates = cli
         .image
         .iter()
         .take(plates::MAX)
@@ -212,22 +212,29 @@ fn run(cli: Cli) -> Result<()> {
     if cli.image.len() > plates::MAX {
         eprintln!("warning: only the first {} --image pictures are used", plates::MAX);
     }
-    if !plates.is_empty() && !cli.layers {
-        eprintln!("warning: --image is only shown with --layers");
+    if !user_plates.is_empty() && !cli.layers && cli.vibe.is_none() {
+        eprintln!("warning: --image is only shown with --layers or --vibe");
     }
+    // The vibe's pictures (<data>/plates/) follow the --image ones in a saved plan.
+    let ai_plates = data.join("plates");
     let reuse = !cli.replan
         && !cli.reanalyse
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
         && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()))
-        && previous.as_ref().is_some_and(|p| p.layers == cli.layers && p.plates == plates);
+        && previous.as_ref().is_some_and(|p| {
+            p.layers == cli.layers && p.plates.starts_with(&user_plates) && p.plates[user_plates.len()..].iter().all(|q| q.starts_with(&ai_plates))
+        });
     let gen_dir = data.join("gen");
     // The vibe runs before blocks load, so the blocks it writes are included. Its judge is reused by evolution.
-    let (judge, seeds) = match &cli.vibe {
-        Some(v) if !reuse && generated > 0.0 && cli.keep.is_none() => vibe_seeds(&cli, v, &scenes, &scenes_dir, &gen_dir, &analysis, &data),
-        _ => (None, Vec::new()),
+    let (judge, design) = match &cli.vibe {
+        Some(v) if !reuse && generated > 0.0 && cli.keep.is_none() => vibe_seeds(&cli, v, &user_plates, &scenes, &scenes_dir, &gen_dir, &analysis, &data),
+        _ => (None, vibe::Design::default()),
     };
+    let seeds = design.genomes.clone();
+    // The vibe's plate list (--image files, then its pictures) replaces the user's when it made one.
+    let plates = if design.plates.is_empty() { user_plates } else { design.plates.clone() };
     // Blocks only when something is (or was) generated.
     let blocks = if generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
         Some(genome::Blocks::load(&scenes_dir.join("blocks"))?)
@@ -297,6 +304,16 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 Vec::new()
             };
+            // A storyboard picks each shot's look as designed (no evolution): the AI is directing.
+            let bar = 240.0 / if analysis.bpm > 0.0 { analysis.bpm } else { 120.0 };
+            let storyboard = |start: f64, _end: f64, _r: u64| {
+                blocks.as_ref()?;
+                let (_, look) = design.shots.iter().rev().find(|(s, _)| s.time <= start + 2.0 * bar).or(design.shots.first())?;
+                design.genomes.get(*look).cloned()
+            };
+            let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if design.shots.is_empty() { &dressed } else { &storyboard };
+            let story: Vec<Shot> = design.shots.iter().map(|(s, _)| *s).collect();
+            let shots = if story.is_empty() { shots } else { story };
             let mut plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
@@ -308,7 +325,7 @@ fn run(cli: Cli) -> Result<()> {
                 force_scene: cli.scene.as_deref(),
                 generated,
                 vibe: cli.vibe.as_deref(),
-                genome_for: Some(&dressed),
+                genome_for: Some(gf),
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
                 shots: &shots,
@@ -421,28 +438,29 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// The vibe's starting genomes, plus the judge (a small headless renderer) it made, for evolution.
+/// The vibe's design (starting genomes, plates, storyboard), plus the judge (a small headless renderer) it made, for evolution.
 /// AI trouble never fails a render: warn and evolve without seeds.
-fn vibe_seeds(cli: &Cli, v: &str, scenes: &[scenes::Scene], scenes_dir: &Path, gen_dir: &Path, analysis: &Analysis, data: &Path) -> (Option<score::Judge>, Vec<genome::Genome>) {
+#[allow(clippy::too_many_arguments)]
+fn vibe_seeds(cli: &Cli, v: &str, images: &[PathBuf], scenes: &[scenes::Scene], scenes_dir: &Path, gen_dir: &Path, analysis: &Analysis, data: &Path) -> (Option<score::Judge>, vibe::Design) {
     let mut judge = match score::Judge::new(scenes, scenes_dir, cli.cpu) {
         Ok(j) => j,
         Err(e) => {
             eprintln!("warning: vibe needs the scene judge ({e:#}); continuing without it");
-            return (None, Vec::new());
+            return (None, vibe::Design::default());
         }
     };
     let Some(c) = llm::load() else {
         eprintln!("warning: no AI service set up (run visualiser --setup-ai); continuing without the vibe");
-        return (Some(judge), Vec::new());
+        return (Some(judge), vibe::Design::default());
     };
     let dir = scenes_dir.join("blocks");
-    let seeds = genome::Blocks::load(&dir)
-        .and_then(|b| vibe::run(&c, &mut judge, &dir, gen_dir, &b, analysis, v, &data.join("vibe.json")))
+    let design = genome::Blocks::load(&dir)
+        .and_then(|b| vibe::run(&c, &mut judge, &dir, gen_dir, &b, analysis, v, images, &data.join("vibe.json")))
         .unwrap_or_else(|e| {
             eprintln!("warning: vibe failed ({e:#}); continuing without it");
-            Vec::new()
+            vibe::Design::default()
         });
-    (Some(judge), seeds)
+    (Some(judge), design)
 }
 
 fn load_or_analyse(audio: &Path, data: &Path, reanalyse: bool) -> Result<Analysis> {
