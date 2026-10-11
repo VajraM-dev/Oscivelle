@@ -267,16 +267,12 @@ impl Blocks {
     /// The frozen library of `engine` (1 or 2): only its block ids, in load (sorted) order, and its palettes.
     pub fn pinned(&self, engine: u32) -> Blocks {
         let ok = |id: &str| V1_BLOCKS.contains(&id) || (engine >= 2 && V2_BLOCKS.contains(&id));
-        let keep = |l: &[Block]| l.iter().filter(|b| ok(&b.id)).cloned().collect();
-        Blocks {
-            motion: keep(&self.motion),
-            emitter: keep(&self.emitter),
-            colour: keep(&self.colour),
-            backdrop: keep(&self.backdrop),
-            overlay: keep(&self.overlay),
-            space: keep(&self.space),
-            palettes: self.palettes[..V1_PALETTES.min(self.palettes.len())].to_vec(),
+        let mut b = self.clone();
+        for k in KINDS {
+            b.list_mut(k).expect("known kind").retain(|x| ok(&x.id));
         }
+        b.palettes.truncate(V1_PALETTES);
+        b
     }
 
     /// The range of param `key` (see `param_key`).
@@ -350,15 +346,16 @@ const NO_SPACE: &str = "fn space(p: vec2<f32>) -> vec2<f32> { return p; }";
 /// Engine-2 blend modes of the emitter over the feedback; "" = add (the engine-1 recipe).
 pub const BLENDS: [&str; 4] = ["screen", "difference", "multiply", "lighten"];
 
-fn blend_wgsl(name: &str) -> &'static str {
-    match name {
-        "screen" => "fn blend(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> { return a + b * max(vec3<f32>(1.0) - a, vec3<f32>(0.0)); }",
-        "difference" => "fn blend(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> { return abs(a - b); }",
+fn blend_wgsl(name: &str) -> String {
+    let e = match name {
+        "screen" => "a + b * max(vec3<f32>(1.0) - a, vec3<f32>(0.0))",
+        "difference" => "abs(a - b)",
         // A pure multiply goes black in a feedback loop: the emitter reveals the feedback instead.
-        "multiply" => "fn blend(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> { return a * (vec3<f32>(0.4) + 1.6 * b) + 0.05 * b; }",
-        "lighten" => "fn blend(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> { return max(a, b); }",
-        _ => "fn blend(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> { return a + b; }",
-    }
+        "multiply" => "a * (vec3<f32>(0.4) + 1.6 * b) + 0.05 * b",
+        "lighten" => "max(a, b)",
+        _ => "a + b",
+    };
+    format!("fn blend(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {{ return {e}; }}")
 }
 
 fn img_wgsl(g: &Genome) -> String {
@@ -379,7 +376,7 @@ pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
         .replace("{MOTION}", &m.wgsl)
         .replace("{EMITTER}", &e.wgsl)
         .replace("{COLOUR}", &c.wgsl)
-        .replace("{BLEND}", blend_wgsl(&g.blend))
+        .replace("{BLEND}", &blend_wgsl(&g.blend))
         .replace("{DECAY}", &format!("{:?}", r.map_or(1.0, |r| r.decay)))
         .replace("{DRIVE}", &format!("{:?}", r.map_or(1.0, |r| r.drive))))
 }

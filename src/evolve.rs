@@ -91,49 +91,32 @@ pub fn best_v2(
     use crate::{regime::REGIMES, score};
     let t0 = (start + 30.0).min((start + end) / 2.0);
     let regime = &REGIMES[(hash(seed, 0x4E61) % REGIMES.len() as u64) as usize];
-    let mut seen = std::collections::HashMap::new();
-    let mut measure = |g: &Genome| -> Option<[f32; 6]> {
-        *seen.entry(g.id()).or_insert_with(|| {
-            let sc = genome::write(g, blocks, gen_dir).ok()?;
-            let m = judge.measure(sc, a, t0, 4.0).ok()?;
-            score::passes(&m, &regime.th).then(|| score::descriptor(&m))
-        })
-    };
-    let first = (budget * 2 / 5).max(2);
-    let mut pass: Vec<(Genome, [f32; 6])> = Vec::new();
-    let mut k = 0u64;
-    let fresh = |pass: &mut Vec<(Genome, [f32; 6])>, k: &mut u64, measure: &mut dyn FnMut(&Genome) -> Option<[f32; 6]>| {
-        let g = genome::random_v2(blocks, hash(seed, *k), regime);
-        *k += 1;
-        if let Some(d) = measure(&g) {
-            pass.push((g, d));
+    // A look already seen yields None, so `pass` has no duplicates.
+    let mut seen = std::collections::HashSet::new();
+    let mut measure = |g: Genome| -> Option<(Genome, [f32; 6])> {
+        if !seen.insert(g.id()) {
+            return None;
         }
+        let sc = genome::write(&g, blocks, gen_dir).ok()?;
+        let m = judge.measure(sc, a, t0, 4.0).ok()?;
+        score::passes(&m, &regime.th).then(|| (g, score::descriptor(&m)))
     };
-    for _ in 0..first {
-        fresh(&mut pass, &mut k, &mut measure);
-    }
+    let fresh = |k: usize| genome::random_v2(blocks, hash(seed, k as u64), regime);
+    let first = (budget * 2 / 5).max(2);
+    let mut pass: Vec<(Genome, [f32; 6])> = (0..first).map(fresh).filter_map(&mut measure).collect();
     let parents: Vec<Genome> = (0..2.min(pass.len())).map(|j| pass[(hash(seed, 0xA0 + j as u64) % pass.len() as u64) as usize].0.clone()).collect();
     let rest = budget.saturating_sub(first);
     let per = rest.div_ceil(2) / parents.len().max(1);
     for (pi, p) in parents.iter().enumerate() {
-        for j in 0..per {
-            let child = genome::mutate_v2(p, blocks, hash(seed, 1000 + (pi * 100 + j) as u64));
-            if let Some(d) = measure(&child) {
-                pass.push((child, d));
-            }
-        }
+        pass.extend((0..per).map(|j| genome::mutate_v2(p, blocks, hash(seed, 1000 + (pi * 100 + j) as u64))).filter_map(&mut measure));
     }
-    for _ in 0..rest - per * parents.len() {
-        fresh(&mut pass, &mut k, &mut measure);
-    }
+    pass.extend((first..first + rest - per * parents.len()).map(fresh).filter_map(&mut measure));
     pick_v2(pass, seed, avoid)
 }
 
 /// Seed-chosen occupied cell, then the candidate in it farthest from everything in `avoid`.
 fn pick_v2(pass: Vec<(Genome, [f32; 6])>, seed: u64, avoid: &[[f32; 6]]) -> Option<(Genome, [f32; 6])> {
     use crate::score::cell;
-    let mut ids = std::collections::HashSet::new();
-    let pass: Vec<_> = pass.into_iter().filter(|(g, _)| ids.insert(g.id())).collect();
     let mut cells: Vec<usize> = pass.iter().map(|(_, d)| cell(d)).collect();
     cells.sort_unstable();
     cells.dedup();

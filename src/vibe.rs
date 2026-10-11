@@ -115,7 +115,7 @@ pub fn run(c: &AiConfig, judge: &mut Judge, blocks_dir: &Path, gen_dir: &Path, b
     let prelude = std::fs::read_to_string(crate::scenes::prelude_path(blocks_dir.parent().unwrap_or(blocks_dir))).context("_prelude.wgsl")?;
     let mut menu = String::new();
     // space is an engine-2 core gene; not offered to the AI
-    for kind in &genome::KINDS[..5] {
+    for kind in genome::KINDS.iter().filter(|k| **k != "space") {
         for b in blocks.list(kind)? {
             menu += &format!("### {} ({kind})\n```toml\n{}\n```\n", b.id, b.toml.trim());
         }

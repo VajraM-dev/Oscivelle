@@ -199,8 +199,8 @@ fn run(cli: Cli) -> Result<()> {
     let plan_path = data.join("plan.json");
     let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
     let engine = cli.engine.or(previous.as_ref().map(|p| p.engine)).unwrap_or(1);
-    // Engine 2 needs snares: older analyses are redone once.
-    let analysis = load_or_analyse(&audio, &data, cli.reanalyse, if engine >= 2 { ANALYSIS_VERSION } else { 0 })?;
+    // Older analyses (no snares) are redone once.
+    let analysis = load_or_analyse(&audio, &data, cli.reanalyse)?;
 
     if let Some(prompt) = &cli.author {
         let c = llm::load().ok_or_else(|| anyhow!("--author needs an AI service: run visualiser --setup-ai"))?;
@@ -270,9 +270,12 @@ fn run(cli: Cli) -> Result<()> {
     } else {
         None
     };
-    // Evolution and dressing pick from the frozen library of this engine. A vibe also uses the AI's own
-    // blocks. The full `blocks` still builds any genome a saved plan names.
-    let core = blocks.as_ref().map(|b| if cli.vibe.is_some() { b.clone() } else { b.pinned(engine) });
+    // The looks that actually run: a vibe that made seeds evolves engine-1 looks from the full library (its own
+    // blocks included); otherwise the frozen library of this engine. The full `blocks` still builds any genome a
+    // saved plan names.
+    let vibed = !seeds.is_empty();
+    let looks = if vibed { 1 } else { engine };
+    let core = blocks.as_ref().map(|b| if vibed { b.clone() } else { b.pinned(looks) });
     // --keep acts on the saved plan as it is (the one the video was rendered from), never a new one.
     if let Some(i) = cli.keep {
         let plan = previous.as_ref().ok_or_else(|| anyhow!("--keep needs a saved plan: render once first"))?;
@@ -310,12 +313,12 @@ fn run(cli: Cli) -> Result<()> {
                 let blocks = core.as_ref().filter(|_| generated > 0.0)?;
                 eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
                 let judge = gen.get_or_init(|| score::Judge::new(&scenes, &scenes_dir, cli.cpu).map(RefCell::new)).as_ref().ok()?;
-                if engine >= 2 && seeds.is_empty() {
+                if looks >= 2 {
                     let mut j = judge.borrow_mut();
                     // Distance from the hand-made scenes keeps engine 2 off their look (measured once per run).
                     let hm: &Vec<[f32; 6]> = handmade.get_or_init(|| {
                         let t = 60.0f64.min(analysis.duration / 2.0);
-                        scenes.iter().filter(|s| scenes::BUILTIN.contains(&s.id.as_str())).filter_map(|s| j.measure(s.clone(), &analysis, t, 4.0).ok()).map(|m| score::descriptor(&m)).collect()
+                        scenes.iter().filter(|s| scenes::is_builtin(&s.id)).filter_map(|s| j.measure(s.clone(), &analysis, t, 4.0).ok()).map(|m| score::descriptor(&m)).collect()
                     });
                     let avoid: Vec<[f32; 6]> = hm.iter().chain(picks.borrow().iter()).copied().collect();
                     let (g, d) = evolve::best_v2(&mut j, blocks, &gen_dir, &analysis, start, end, r, budget, &avoid)?;
@@ -363,7 +366,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if story.is_empty() { &dressed } else { &storyboard };
             let shots = if story.is_empty() { shots } else { story.iter().map(|(s, _)| *s).collect() };
-            if engine >= 2 && cli.vibe.is_some() {
+            if looks < engine {
                 eprintln!("note: --vibe uses engine 1 looks");
             }
             let mut plan = director::plan(&director::PlanRequest {
@@ -516,10 +519,10 @@ fn vibe_seeds(cli: &Cli, v: &str, images: &[PathBuf], scenes: &[scenes::Scene], 
     (Some(judge), design)
 }
 
-fn load_or_analyse(audio: &Path, data: &Path, reanalyse: bool, min_version: u32) -> Result<Analysis> {
+fn load_or_analyse(audio: &Path, data: &Path, reanalyse: bool) -> Result<Analysis> {
     let path = data.join("analysis.json");
     if !reanalyse {
-        if let Some(a) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).filter(|a: &Analysis| a.version >= min_version) {
+        if let Some(a) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).filter(|a: &Analysis| a.version >= ANALYSIS_VERSION) {
             eprintln!("using saved analysis {}", path.display());
             return Ok(a);
         }

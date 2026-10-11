@@ -101,14 +101,6 @@ fn pearson(a: &[f32], b: &[f32]) -> f32 {
     if va * vb > 1e-12 { c / (va * vb).sqrt() } else { 0.0 }
 }
 
-// ponytail: hand-set thresholds. Calibrate with `cargo test calibrate -- --ignored --nocapture`
-// (every hand-made scene must pass); a learned scorer only if these keep misjudging.
-const MEAN: (f32, f32) = (0.04, 0.75);
-const MIN_CONTRAST: f32 = 0.04;
-const MOTION: (f32, f32) = (0.002, 0.25);
-const MAX_CLIPPED: f32 = 0.25;
-const MAX_GRAIN: f32 = 0.2;
-
 /// Judge acceptance ranges (engine 2: one set per regime).
 #[derive(Clone, Copy, Debug)]
 pub struct Thresholds {
@@ -119,7 +111,9 @@ pub struct Thresholds {
     pub max_grain: f32,
 }
 
-pub const V1: Thresholds = Thresholds { mean: MEAN, min_contrast: MIN_CONTRAST, motion: MOTION, max_clipped: MAX_CLIPPED, max_grain: MAX_GRAIN };
+// ponytail: hand-set thresholds. Calibrate with `cargo test calibrate -- --ignored --nocapture`
+// (every hand-made scene must pass); a learned scorer only if these keep misjudging.
+pub const V1: Thresholds = Thresholds { mean: (0.04, 0.75), min_contrast: 0.04, motion: (0.002, 0.25), max_clipped: 0.25, max_grain: 0.2 };
 
 /// Not black, static, flooded or noisy by `th`.
 pub fn passes(m: &Metrics, th: &Thresholds) -> bool {

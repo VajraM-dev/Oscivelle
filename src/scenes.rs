@@ -14,7 +14,11 @@ use std::path::{Path, PathBuf};
 
 /// The shipped scenes: the only ones the director picks on its own (pinned, like genome V1_BLOCKS).
 /// --keep / --author scenes stay reachable through --scene and markers.
-pub const BUILTIN: [&str; 7] = ["fractal_zoom", "ink_in_water", "kaleidoscope_bloom", "liquid_tunnel", "neon_geometry", "plasma_field", "starfield_warp"];
+const BUILTIN: [&str; 7] = ["fractal_zoom", "ink_in_water", "kaleidoscope_bloom", "liquid_tunnel", "neon_geometry", "plasma_field", "starfield_warp"];
+
+pub fn is_builtin(id: &str) -> bool {
+    BUILTIN.contains(&id)
+}
 
 #[derive(Clone, Debug)]
 pub struct Scene {

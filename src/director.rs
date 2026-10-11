@@ -66,7 +66,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         bail!("no scenes");
     }
     // Auto picks come from the shipped scenes only; a library without them (tests) uses all.
-    let builtin: Vec<Scene> = req.scenes.iter().filter(|s| crate::scenes::BUILTIN.contains(&s.id.as_str())).cloned().collect();
+    let builtin: Vec<Scene> = req.scenes.iter().filter(|s| crate::scenes::is_builtin(&s.id)).cloned().collect();
     let pool: &[Scene] = if builtin.is_empty() { req.scenes } else { &builtin };
     let bar = bar_len(a);
     let near_drop = |t: f64| a.drops.iter().any(|d| (d.time - t).abs() <= bar);
@@ -363,15 +363,22 @@ fn param_mut(u: &mut SceneUniforms, j: usize) -> &mut f32 {
     &mut row[j % 4]
 }
 
-const SOURCES: [ModSource; 7] =
-    [ModSource::Kick, ModSource::Bass, ModSource::Mid, ModSource::High, ModSource::Energy, ModSource::Tension, ModSource::Drop];
-
-/// Engine 2 adds onset sources (appended, so engine-1 picks are unchanged).
-const SOURCES_V2: [ModSource; 9] = [ModSource::Kick, ModSource::Bass, ModSource::Mid, ModSource::High, ModSource::Energy, ModSource::Tension, ModSource::Drop, ModSource::Snare, ModSource::Punch];
+/// Engine 2 adds the onset sources (appended, so engine-1 picks are unchanged).
+const SOURCES: [ModSource; 9] = [
+    ModSource::Kick,
+    ModSource::Bass,
+    ModSource::Mid,
+    ModSource::High,
+    ModSource::Energy,
+    ModSource::Tension,
+    ModSource::Drop,
+    ModSource::Snare,
+    ModSource::Punch,
+];
 
 /// 1-2 audio routings onto random non-fixed params (own rng stream, so scene/palette/variation picks are unchanged).
 fn mods(sc: &Scene, seed: u64, engine: u32) -> Vec<Mod> {
-    let sources: &[ModSource] = if engine >= 2 { &SOURCES_V2 } else { &SOURCES };
+    let sources = &SOURCES[..if engine >= 2 { 9 } else { 7 }];
     let free: Vec<usize> = (0..sc.params.len()).filter(|&i| !sc.params[i].fixed).collect();
     if free.is_empty() {
         return Vec::new();
@@ -401,7 +408,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
 
     // Audio-driven part, shared by both scenes of a morph.
     let kick = onset_env(&a.kicks, t, 0.12);
-    let since_kick = since(&a.kicks, t);
+    let since_kick = since(&a.kicks, t, |k| k.time);
     let d = a.drops.partition_point(|d| d.time <= t);
     let (drop_env, drop_dt) = match d.checked_sub(1).map(|j| a.drops[j]) {
         Some(dr) => (dr.strength as f64 * (-(t - dr.time) / (2.0 * bar)).exp(), t - dr.time),
@@ -427,7 +434,7 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         bands: [curve(&c.sub), curve(&c.bass), curve(&c.mid), curve(&c.high)],
         shape: [energy, tension, drop_env as f32, 0.0],
         misc: [0.0, if quality == Quality::Final { 1.0 } else { 0.0 }, since_kick as f32, drop_dt.min(1e3) as f32],
-        hits: [snare as f32, onset_env(&a.kicks, t, 0.045) as f32, since(&a.snares, t).min(1e3) as f32, antic],
+        hits: [snare as f32, onset_env(&a.kicks, t, 0.045) as f32, since(&a.snares, t, |k| k.time).min(1e3) as f32, antic],
         ..Default::default()
     };
 
@@ -506,30 +513,29 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     let drop_flash = if drop_dt < beat_len { (if v2 { 0.8 } else { 0.4 }) * drop_env } else { 0.0 };
     // Finishing look: --look wins, else the segment's (blended through a morph).
     let post_of = |s: &Segment| plan.post.or_else(|| s.genome.as_ref().map(|g| g.post)).unwrap_or_default();
-    let post = match morph {
+    let mut post = match morph {
         Some((j, m)) => post_of(&segs[j - 1]).lerp(&post_of(&segs[j]), m),
         None => segs.get(i).map(post_of).unwrap_or_default(),
     };
-    let mut post = post;
     if post.strobe + post.invert + post.rgb_split + post.tear > 0.0 {
         // Flashes (strobe, invert) only on downbeats: ≤ 1 per bar, under the 3 Hz flash limit (WCAG 2.3.1)
         // below 720 BPM. Displacement glitches (split, tear) ride the snares.
-        let since_down = a.downbeats[..a.downbeats.partition_point(|&x| x <= t)].last().map_or(1e3, |&x| t - x);
+        let since_down = since(&a.downbeats, t, |&x| x);
         let down = (-since_down / 0.08).exp() as f32;
         post.strobe *= down;
         post.invert *= down;
         post.rgb_split *= snare as f32;
         post.tear *= snare as f32;
     }
-    let squeeze = if v2 { 1.0 - antic } else { 1.0 };
+    let dark = if v2 { antic } else { 0.0 };
     FrameState {
         scene_a,
         a: ua,
         b,
         mix,
         flash: (0.06 * kick + trans_flash + drop_flash).clamp(0.0, 1.0) as f32,
-        exposure: (1.0 + 0.1 * energy) * (1.0 - 0.85 * (1.0 - squeeze)),
-        saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2) * (1.0 - 0.8 * (1.0 - squeeze)),
+        exposure: (1.0 + 0.1 * energy) * (1.0 - 0.85 * dark),
+        saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2) * (1.0 - 0.8 * dark),
         post,
     }
 }
@@ -552,9 +558,9 @@ fn onset_env(xs: &[Kick], t: f64, decay: f64) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// Seconds since the last onset at or before `t` (1e3 if none).
-fn since(xs: &[Kick], t: f64) -> f64 {
-    xs[..xs.partition_point(|k| k.time <= t)].last().map_or(1e3, |k| t - k.time)
+/// Seconds since the last of `xs` (by `time`) at or before `t` (1e3 if none).
+fn since<T>(xs: &[T], t: f64, time: impl Fn(&T) -> f64) -> f64 {
+    xs[..xs.partition_point(|x| time(x) <= t)].last().map_or(1e3, |x| t - time(x))
 }
 
 /// Linear interpolation into a curve sampled at `rate` Hz.
