@@ -24,6 +24,7 @@ pub struct Answers {
     pub no_grain: bool,
     pub layers: bool,
     pub look: Option<Look>,
+    pub images: Vec<PathBuf>,
 }
 
 fn val<T: ValueEnum>(t: &T) -> String {
@@ -68,6 +69,9 @@ pub fn to_args(a: &Answers) -> Vec<String> {
     }
     if let Some(l) = &a.look {
         v.extend(["--look".into(), val(l)]);
+    }
+    for i in &a.images {
+        v.extend(["--image".into(), i.display().to_string()]);
     }
     v
 }
@@ -117,7 +121,13 @@ pub fn ask() -> Result<Answers> {
         } else {
             println!("\x1b[2mTip: run \"visualiser --setup-ai\" to describe visuals in words.\x1b[0m");
         }
-        a.layers = Confirm::new("Add motion graphics (backdrops, HUD, text, a new shot at each drop)?").with_default(false).prompt()?;
+        a.layers = Confirm::new("Add motion graphics (backdrops, HUD, text, a new shot at each drop)?")
+            .with_help_message("Yes = scenery behind the visuals (sky, 3D sea world, your pictures) + HUD/text on top. No = abstract visuals only.")
+            .with_default(false)
+            .prompt()?;
+        if a.layers && Confirm::new("Show your own pictures in the video?").with_help_message("Shown as backdrops (full-frame photo) or floating cut-outs (transparent PNG). Up to 8.").with_default(false).prompt()? {
+            a.images = pick_many("Choose pictures", &["png", "jpg", "jpeg"])?;
+        }
     }
 
     let looks = vec!["Clean (recommended)", "VHS tape", "CRT screen", "Mono (green hologram)"];
@@ -170,6 +180,16 @@ fn pick(title: &str, exts: &[&str]) -> Result<PathBuf> {
     Ok(p)
 }
 
+fn pick_many(title: &str, exts: &[&str]) -> Result<Vec<PathBuf>> {
+    if let Some(ps) = rfd::FileDialog::new().set_title(title).add_filter("Pictures", exts).pick_files() {
+        for p in &ps {
+            println!("> {title}: {}", p.display());
+        }
+        return Ok(ps);
+    }
+    Ok(vec![pick(title, exts)?])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,10 +208,11 @@ mod tests {
             no_grain: true,
             layers: true,
             look: Some(Look::Vhs),
+            images: vec!["a.png".into()],
             ..Default::default()
         };
         let args = to_args(&a);
-        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain --layers --look vhs");
+        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain --layers --look vhs --image a.png");
         let cli = crate::Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args)).unwrap();
         assert_eq!(cli.audio.as_deref(), Some(std::path::Path::new("C:/My Music/mix.flac")));
         assert_eq!(cli.mode, Some(Mode::Single));
@@ -201,5 +222,6 @@ mod tests {
         assert_eq!(cli.vibe.as_deref(), Some("dark and liquid"));
         assert!(cli.no_grain && !cli.no_titles);
         assert!(cli.layers && cli.look == Some(Look::Vhs));
+        assert_eq!(cli.image, vec![PathBuf::from("a.png")]);
     }
 }
