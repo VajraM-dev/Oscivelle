@@ -57,5 +57,6 @@ both the motion and the emitter see it, so trails and shapes inherit its symmetr
   `col = blend(col, colour(emit(p)) * drive)`. Blocks never define `space`/`blend` unless they are that kind.
 - New helpers (all blocks): `snare()` (snare/clap envelope), `punch()` (fast kick onset, sharper than
   `kick()`), `since_snare()`, `anticipation()` (0..1 ramp over the half bar before a drop; 0 after).
+- `hyper_fold(q, k, w) -> vec4` (|q|<1): Mobius-drift by w, fold into the {p,q} Poincare tiling k (0..3); returns (q, inversions, mirror-circle r; centre (sqrt(1+r^2), 0)).
 - Motion blocks may tap `prev()` a few times (≤ 5) to react to the image (edges, brightness); get the pixel
   size from `resolution()`.

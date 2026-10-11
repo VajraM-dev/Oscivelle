@@ -156,6 +156,35 @@ fn line_glow(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, w: f32) -> f32 {
     return w * w / (d * d + w * w);
 }
 
+// Poincare-disk {p,q} fold: Mobius-drift q (|q|<1) by w, then fold into the fundamental triangle of
+// tiling k (0..3: {4,5} {5,4} {3,7} {6,4}). Mirrors: x-axis, line at pi/p, circle centre (d,0) radius r,
+// d^2 = 1 + r^2. Returns (folded q, inversion count, r).
+fn hyper_fold(q0: vec2<f32>, k: i32, w: vec2<f32>) -> vec4<f32> {
+    let num = q0 - w;
+    let den = vec2<f32>(1.0 - (w.x * q0.x + w.y * q0.y), -(w.x * q0.y - w.y * q0.x));
+    var q = vec2<f32>(num.x * den.x + num.y * den.y, num.y * den.x - num.x * den.y) / max(dot(den, den), 1e-6);
+    let pn = select(select(select(4.0, 5.0, k == 1), 3.0, k == 2), 6.0, k == 3);
+    let qn = select(select(select(5.0, 4.0, k == 1), 7.0, k == 2), 4.0, k == 3);
+    let a = PI / pn;
+    let b = PI / qn;
+    let d = 1.0 / sqrt(1.0 - sin(a) * sin(a) / (cos(b) * cos(b)));
+    let r = d * sin(a) / cos(b);
+    let c = vec2<f32>(d, 0.0);
+    var n = 0;
+    for (var i = 0; i < 24; i++) {
+        let ang = atan2(q.y, q.x);
+        var m = ang - 2.0 * a * floor(ang / (2.0 * a));
+        m = select(m, 2.0 * a - m, m > a);
+        q = vec2<f32>(cos(m), sin(m)) * length(q);
+        let v = q - c;
+        let l2 = dot(v, v);
+        if (l2 >= r * r) { break; }
+        q = c + v * (r * r / l2);
+        n++;
+    }
+    return vec4<f32>(q, f32(n), r);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = scene(in.uv).rgb;
