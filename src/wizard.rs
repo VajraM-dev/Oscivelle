@@ -2,7 +2,7 @@
 //! prints the equivalent command → runs it. The answers become ordinary CLI args, so
 //! clap validates them exactly as if typed.
 use crate::{llm, markers};
-use crate::types::{Look, Mode, Quality};
+use crate::types::{fresh_seed, Look, Mode, Quality};
 use anyhow::{bail, Result};
 use clap::ValueEnum;
 use inquire::validator::Validation;
@@ -106,8 +106,10 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
             pick("Choose your audio file", AUDIO)?
         }
     };
-    // Seed, titles and grain carry over unless changed in the advanced options.
-    let mut a = Answers { audio, seed: d.seed, no_titles: d.no_titles, no_grain: d.no_grain, ..Default::default() };
+    // Each new session is a new take (a fresh seed); "Change settings" keeps the take. Seed, titles and grain
+    // carry over unless changed in the advanced options.
+    let seed = d.seed.unwrap_or_else(fresh_seed);
+    let mut a = Answers { audio, seed: Some(seed), no_titles: d.no_titles, no_grain: d.no_grain, ..Default::default() };
 
     if Confirm::new("Do you have a tracklist file (CUE, Audacity labels or a text list of times)?").with_default(d.markers.is_some()).prompt()? {
         a.markers = Some(match &d.markers {
@@ -232,8 +234,7 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
     // Titles come from the tracklist, so only offer them when there is one.
     let advanced = if a.markers.is_some() { "Change advanced options (seed, titles, film grain)?" } else { "Change advanced options (seed, film grain)?" };
     if Confirm::new(advanced).with_default(false).prompt()? {
-        let seed = CustomType::<u64>::new("Seed (same seed = same video; another number = a new take):").with_default(d.seed.unwrap_or(1)).prompt()?;
-        a.seed = (seed != 1).then_some(seed);
+        a.seed = Some(CustomType::<u64>::new("Seed (same seed = same video; another number = a new take):").with_default(seed).prompt()?);
         if a.markers.is_some() {
             a.no_titles = !Confirm::new("Show track titles?").with_default(!d.no_titles).prompt()?;
         }
@@ -272,7 +273,7 @@ pub fn after_preview(a: &Answers) -> Result<Option<Answers>> {
         0 => Some(Answers { start: None, quality: None, resolution: resolution(a.resolution)?, ..a.clone() }),
         1 => Some(Answers { start: None, preview: a.start.clone(), ..a.clone() }),
         2 => {
-            let seed = a.seed.unwrap_or(1).wrapping_add(1);
+            let seed = fresh_seed();
             println!("New take: seed {seed}");
             Some(Answers { seed: Some(seed), ..a.clone() })
         }
@@ -333,7 +334,7 @@ mod tests {
         assert_eq!(cli.audio.as_deref(), Some(std::path::Path::new("C:/My Music/mix.flac")));
         assert_eq!(cli.mode, Some(Mode::Single));
         assert_eq!(cli.quality, Quality::Draft);
-        assert_eq!(cli.seed, 7);
+        assert_eq!(cli.seed, Some(7));
         assert_eq!(cli.generated, Some(1.0));
         assert_eq!(cli.vibe.as_deref(), Some("dark and liquid"));
         assert!(cli.no_grain && !cli.no_titles);

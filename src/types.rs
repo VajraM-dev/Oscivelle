@@ -30,6 +30,12 @@ pub fn hash(a: u64, b: u64) -> u64 {
     mix64(a ^ mix64(b))
 }
 
+/// A new take's seed: random (std's per-process random hasher keys), 9 digits so it's easy to retype.
+pub fn fresh_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new().build_hasher().finish() % 1_000_000_000
+}
+
 /// "M:SS", or "H:MM:SS" when `long` (or the value is an hour or more).
 pub fn hms(secs: u64, long: bool) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);

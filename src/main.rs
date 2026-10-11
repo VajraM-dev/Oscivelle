@@ -40,9 +40,10 @@ struct Cli {
     /// Output height: 720, 1080 or 1440. Default 1080 (720 for draft).
     #[arg(long)]
     resolution: Option<u32>,
-    /// Same file + settings + seed = same video.
-    #[arg(long, default_value_t = 1)]
-    seed: u64,
+    /// Same file + settings + seed = same video. Default: the saved plan's seed (so a plain re-run reuses it),
+    /// else a fresh random one: every new project is a new take.
+    #[arg(long)]
+    seed: Option<u64>,
     /// Re-roll one segment (index from the plan file); repeatable.
     #[arg(long)]
     reroll: Vec<usize>,
@@ -205,6 +206,14 @@ fn run(cli: Cli) -> Result<()> {
     // New projects get engine 2; a saved plan without `engine` reads as 1, so old projects keep their looks.
     let engine = cli.engine.or(previous.as_ref().map(|p| p.engine)).unwrap_or(2);
     let pool = cli.pool.or(previous.as_ref().map(|p| p.pool)).unwrap_or_default();
+    let seed = match cli.seed.or(previous.as_ref().map(|p| p.seed)) {
+        Some(s) => s,
+        None => {
+            let s = types::fresh_seed();
+            eprintln!("seed {s} (--seed {s} makes this take again)");
+            s
+        }
+    };
     // Older analyses (no snares) are redone once.
     let analysis = load_or_analyse(&audio, &data, cli.reanalyse)?;
 
@@ -255,7 +264,7 @@ fn run(cli: Cli) -> Result<()> {
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref(), engine, pool))
+        && previous.as_ref().is_some_and(|p| p.same_inputs(seed, mode, generated, cli.vibe.as_deref(), engine, pool))
         && previous.as_ref().is_some_and(|p| {
             p.layers == cli.layers && p.plates.starts_with(&user_plates) && p.plates[user_plates.len()..].iter().all(|q| q.starts_with(&ai_plates))
         });
@@ -333,7 +342,7 @@ fn run(cli: Cli) -> Result<()> {
                     return Some(g);
                 }
                 // The take's seed shifts the rotation, so new takes start from other looks.
-                let i = k.replace(k.get() + 1).wrapping_add(hash(cli.seed, 0x5EED) as usize) % seeds.len().max(1);
+                let i = k.replace(k.get() + 1).wrapping_add(hash(seed, 0x5EED) as usize) % seeds.len().max(1);
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
                 evolve::best(&mut judge.borrow_mut(), sub.as_ref().unwrap_or(blocks), &gen_dir, &analysis, start, end, r, &rotated, budget)
             };
@@ -381,7 +390,7 @@ fn run(cli: Cli) -> Result<()> {
                 scenes: &scenes,
                 mode,
                 markers: &markers,
-                seed: cli.seed,
+                seed,
                 previous: previous.as_ref(),
                 reroll: &cli.reroll,
                 force_scene: cli.scene.as_deref(),

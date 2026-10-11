@@ -169,7 +169,7 @@ Auto mode detects a track change when the **key or tempo** changes. Breakdowns a
 
 | Option | Values | Default | Description |
 |---|---|---|---|
-| `--seed <N>` | integer | `1` | Fixes every random choice. Same file + same settings + same seed = the same video. A new seed gives a different take. Different files get different takes even with the same seed. |
+| `--seed <N>` | integer | saved plan's, else random | Fixes every random choice. Same file + same settings + same seed = the same video. Unset: a plain re-run (and `--replan`/`--reroll`) keeps the saved plan's seed; a new project gets a fresh random seed, printed as `seed N (--seed N makes this take again)`. The guided mode starts every session and every "Try another take" on a fresh random seed. |
 | `--reroll <INDEX>` | segment index (0-based, as in `plan.json`) | none | Gives one segment a new take: scene, palette and variations. Every other segment stays the same. Repeat it for several segments: `--reroll 2 --reroll 5`. Re-rolling the same segment again gives yet another take. |
 
 To keep a segment you like, set `"locked": true` on it in the plan file. See [Editing the plan file](#editing-the-plan-file).
