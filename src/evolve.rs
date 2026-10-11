@@ -99,7 +99,8 @@ pub fn best_v2(
         }
         let sc = genome::write(&g, blocks, gen_dir).ok()?;
         let m = judge.measure(sc, a, t0, 4.0).ok()?;
-        score::passes(&m, &regime.th).then(|| (g, score::descriptor(&m)))
+        // Each recipe widens the regime's ranges its own way (regime::gate).
+        score::passes(&m, &crate::regime::gate(regime, &g.template)).then(|| (g, score::descriptor(&m)))
     };
     let fresh = |k: usize| genome::random_v2(blocks, hash(seed, k as u64), regime);
     let first = (budget * 2 / 5).max(2);

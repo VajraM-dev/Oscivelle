@@ -82,7 +82,7 @@ struct Cli {
     /// Scenes folder. Default: scenes/ next to the program, else ./scenes, else the source tree's scenes/.
     #[arg(long)]
     scenes: Option<PathBuf>,
-    /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated). Default: the saved plan's value, else 0.5.
+    /// Share of scenes that are freshly generated (0 = only the hand-made ones, 1 = all generated). Default: the saved plan's value, else 1 with engine 2 (0.5 with engine 1).
     #[arg(long)]
     generated: Option<f32>,
     /// Copy segment N's generated scene into scenes/ as a hand-made one (keep a look you love).
@@ -231,7 +231,9 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
-    let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
+    // Unset = what the saved plan used (so a plain re-run reuses it), else all generated with engine 2 (its takes
+    // share no screen time with the hand-made scenes) and half with engine 1.
+    let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(if engine >= 2 { 1.0 } else { 0.5 });
     // A vibe or --layers only steers generated scenes, so they imply some.
     let generated = if (cli.vibe.is_some() || cli.layers) && generated == 0.0 { 1.0 } else { generated };
     // Absolute, so the saved plan still finds them from another working directory.
@@ -345,21 +347,18 @@ fn run(cli: Cli) -> Result<()> {
                     _ => Some(g),
                 }
             };
-            // --layers: a morph into each build-up and a flash on each drop.
-            let shots: Vec<Shot> = if cli.layers {
-                analysis
-                    .drops
-                    .iter()
-                    .flat_map(|d| {
-                        [
-                            Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } },
-                            Shot { time: d.time, transition: Transition { kind: TransitionKind::Flash, duration: 0.0 } },
-                        ]
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            // Drops are hard cuts into a new shot: --layers flashes; engine 2 resets (black, then the new world
+            // rebuilds), with or without --layers. --layers also morphs into each build-up.
+            let drop_cut = Transition { kind: if looks >= 2 { TransitionKind::Reset } else { TransitionKind::Flash }, duration: 0.0 };
+            let shots: Vec<Shot> = analysis
+                .drops
+                .iter()
+                .flat_map(|d| {
+                    let build = cli.layers.then_some(Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } });
+                    let drop = (cli.layers || looks >= 2).then_some(Shot { time: d.time, transition: drop_cut });
+                    build.into_iter().chain(drop)
+                })
+                .collect();
             // A storyboard picks each shot's look as designed (no evolution): the AI is directing.
             // The shot nearest the segment start (the director snaps shots up to 2 bars and may drop some);
             // else the last one before it.

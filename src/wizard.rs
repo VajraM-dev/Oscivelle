@@ -126,20 +126,20 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
     }
 
     let styles = vec![
-        "Mix of hand-made and freshly generated (recommended)",
+        "Freshly generated (recommended)",
+        "Mix of hand-made and freshly generated",
         "Hand-made only",
-        "All freshly generated",
     ];
     let cur = match d.generated {
-        Some(g) if g == 0.0 => 1,
-        Some(g) if g == 1.0 => 2,
+        Some(g) if g == 0.0 => 2,
+        Some(g) if g < 1.0 => 1,
         _ => 0,
     };
-    a.generated = match Select::new("Visual style?", styles).with_starting_cursor(cur).raw_prompt()?.index {
-        1 => Some(0.0),
-        2 => Some(1.0),
-        _ => None,
-    };
+    a.generated = Some(match Select::new("Visual style?", styles).with_starting_cursor(cur).raw_prompt()?.index {
+        1 => 0.5,
+        2 => 0.0,
+        _ => 1.0,
+    });
     // Hand-made scenes are fixed: motion graphics, AI and pictures only apply to generated ones.
     if a.generated != Some(0.0) {
         a.layers = Confirm::new("Add motion graphics (backdrops, HUD, text, a new shot at each drop)?")
