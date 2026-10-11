@@ -442,10 +442,10 @@ impl Engine {
             if let Some(pb) = self.pipelines.get(id_b) {
                 self.queue.write_buffer(&self.ubuf[1], 0, bytemuck::bytes_of(ub));
                 draw(&mut enc, &self.scratch, true, pb, &self.scene_bg[1][cur], 1.0);
-                if fs.wipe == 0 {
+                if fs.morph_style == 0 {
                     draw(&mut enc, &self.fb[next], false, &self.copy_pl, &self.scratch_bg, fs.mix as f64);
                 } else {
-                    let t = [fs.mix, fs.wipe as f32, self.sim.0 as f32 / self.sim.1 as f32, 0.0];
+                    let t = [fs.mix, fs.morph_style as f32, self.sim.0 as f32 / self.sim.1 as f32, 0.0];
                     self.queue.write_buffer(&self.tbuf, 0, bytemuck::bytes_of(&t));
                     draw(&mut enc, &self.fb[next], false, &self.trans_pl, &self.trans_bg, 1.0);
                 }
@@ -454,18 +454,14 @@ impl Engine {
         if let Some(w) = accum_weight {
             draw(&mut enc, &self.accum, false, &self.copy_pl, &self.fb_bg[next], w as f64);
         }
+        // The newest frame of each output frame (comp blocks read it with hist()); res_time[2] is t.
+        let t = fs.a.res_time[2] as f64;
+        if let Some(views) = self.hist.as_ref().filter(|_| last_substep(t)) {
+            draw(&mut enc, &views[hist_layer(t, views.len())], true, &self.hist_pl, &self.fb_bg[next], 1.0);
+        }
         self.queue.submit([enc.finish()]);
         self.cur = next;
         res
-    }
-
-    /// Stores the newest feedback frame as output frame floor(t · OUT_FPS) of the history ring (comp blocks
-    /// read it with hist()). Call once per output frame, after its last sub-step; a no-op without a ring.
-    pub fn push_history(&self, t: f64) {
-        let Some(views) = &self.hist else { return };
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        draw(&mut enc, &views[hist_layer(t, views.len())], true, &self.hist_pl, &self.fb_bg[self.cur], 1.0);
-        self.queue.submit([enc.finish()]);
     }
 
     /// Layer pass (backdrop + feedback + overlay) into `comp`; false when neither scene has one.
@@ -524,6 +520,12 @@ impl Engine {
         self.queue.write_buffer(&self.fbuf, 0, bytemuck::bytes_of(&u));
         draw(enc, target, true, &self.finish_pl, &self.finish_bg[src], 1.0);
     }
+}
+
+/// Step at `t` is its output frame's last sub-step (the one the history ring records).
+fn last_substep(t: f64) -> bool {
+    let sub = (SIM_HZ / OUT_FPS) as i64;
+    ((t * SIM_HZ as f64).round() as i64).rem_euclid(sub) == sub - 1
 }
 
 /// Ring layer of the output frame at `t` (prelude hist() derives the same index from time()).
@@ -655,7 +657,7 @@ mod tests {
             u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 0.0, 1.0 / SIM_HZ as f32];
             u.beat[0] = 1.0;
             u.pal = [[1.0, 0.5, 0.2, 1.0]; 4];
-            let fs = FrameState { scene_a: "ok".into(), a: u, b: Some(("ok".into(), u)), mix: 0.5, flash: 0.2, exposure: 1.0, saturation: 1.0, post: Post::default(), wipe: 0, reset: false };
+            let fs = FrameState { scene_a: "ok".into(), a: u, b: Some(("ok".into(), u)), mix: 0.5, flash: 0.2, exposure: 1.0, saturation: 1.0, post: Post::default(), morph_style: 0, reset: false };
             for i in 0..4 {
                 e.step(&fs, Some(1.0 / (i % 2 + 1) as f32)).unwrap();
             }
@@ -735,7 +737,7 @@ mod tests {
         let mut u = SceneUniforms::default();
         u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
         let post = Post { vhs: 1.0, scanlines: 1.0, posterize: 1.0, tint_amount: 1.0, tint: [0.0, 1.0, 0.0], strobe: 1.0, rgb_split: 1.0, tear: 1.0, invert: 1.0 };
-        let fs = FrameState { scene_a: lay[0].id.clone(), a: u, b: Some((lay[lay.len() - 1].id.clone(), u)), mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post, wipe: 0, reset: false };
+        let fs = FrameState { scene_a: lay[0].id.clone(), a: u, b: Some((lay[lay.len() - 1].id.clone(), u)), mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post, morph_style: 0, reset: false };
         e.step(&fs, Some(1.0)).unwrap();
         let out = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -777,7 +779,7 @@ mod tests {
             let mut u = SceneUniforms::default();
             u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
             u.p0 = [1.0; 4];
-            let fs = FrameState { scene_a: s.id.clone(), a: u, b: None, mix: 0.0, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default(), wipe: 0, reset: false };
+            let fs = FrameState { scene_a: s.id.clone(), a: u, b: None, mix: 0.0, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default(), morph_style: 0, reset: false };
             e.step(&fs, Some(1.0)).unwrap();
         }
         assert_eq!(b2.space.len(), 6, "all space blocks present");
@@ -807,12 +809,12 @@ mod tests {
         for (i, s) in v3.iter().enumerate() {
             e.compile(&s.id).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
             let mut u = SceneUniforms::default();
-            u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0 + i as f32 / 30.0, 1.0 / SIM_HZ as f32];
+            // A last sub-step, so step also records the history pass.
+            u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0 + (2 * i + 1) as f32 / SIM_HZ as f32, 1.0 / SIM_HZ as f32];
             u.p0 = [1.0; 4];
             let b = Some((v3[(i + 1) % v3.len()].id.clone(), u));
-            let fs = FrameState { scene_a: s.id.clone(), a: u, b, mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default(), wipe: (i % 5) as u32, reset: i % 2 == 0 };
+            let fs = FrameState { scene_a: s.id.clone(), a: u, b, mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default(), morph_style: (i % 5) as u32, reset: i % 2 == 0 };
             e.step(&fs, Some(1.0)).unwrap_or_else(|err| panic!("{}: {err:#}", s.id));
-            e.push_history(u.res_time[2] as f64);
             let mut enc = device.create_command_encoder(&Default::default());
             e.finish(&mut enc, &out.create_view(&Default::default()), &fs, false, false);
             queue.submit([enc.finish()]);
@@ -820,13 +822,18 @@ mod tests {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     }
 
-    /// A render pushes after each output frame's last sub-step (t0 + (2f + 1) / 60): consecutive frames take
-    /// consecutive layers and wrap at the ring size, also for a pre-roll's negative frames.
+    /// Step records history at each output frame's last sub-step (t0 + (2f + 1) / 60, seen through the f32
+    /// res_time): consecutive frames take consecutive layers and wrap at the ring size, also for a pre-roll's
+    /// negative frames, and no other sub-step records.
     #[test]
     fn history_layers_follow_output_frames() {
-        let at = |f: i64| hist_layer(10.0 + (2 * f + 1) as f64 / SIM_HZ as f64, HIST_LEN as usize);
-        for f in -70..70 {
-            assert_eq!(at(f + 1), (at(f) + 1) % HIST_LEN as usize, "frame {f}");
+        for t0 in [10.0, 3600.0] {
+            let t = |n: i64| (t0 + n as f64 / SIM_HZ as f64) as f32 as f64;
+            let at = |f: i64| hist_layer(t(2 * f + 1), HIST_LEN as usize);
+            for f in -70..70 {
+                assert!(last_substep(t(2 * f + 1)) && !last_substep(t(2 * f)), "frame {f}");
+                assert_eq!(at(f + 1), (at(f) + 1) % HIST_LEN as usize, "frame {f}");
+            }
         }
     }
 }

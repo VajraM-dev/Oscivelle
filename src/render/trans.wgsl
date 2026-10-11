@@ -10,11 +10,6 @@ struct T {
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 
-fn trans_hash(c: vec2<f32>) -> f32 {
-    let b = bitcast<vec2<u32>>(c + 0.0);
-    return f32(pcg(b.x ^ pcg(b.y)) >> 8u) / 16777216.0;
-}
-
 @fragment
 fn fs_trans(in: VsOut) -> @location(0) vec4<f32> {
     let k = t.a.x;
@@ -38,7 +33,7 @@ fn fs_trans(in: VsOut) -> @location(0) vec4<f32> {
         }
         case 3: {
             // Melt: B drips in from the top, each column at its own speed, sliding down as it lands.
-            let col = trans_hash(vec2<f32>(floor(in.uv.x * 48.0), 3.0));
+            let col = hash21(vec2<f32>(floor(in.uv.x * 48.0), 3.0));
             let front = k * (1.6 + 0.8 * col) - 0.3;
             m = 1.0 - smoothstep(front - 0.08, front, in.uv.y);
             uv.y = in.uv.y - (1.0 - k) * 0.15 * col;
@@ -46,7 +41,7 @@ fn fs_trans(in: VsOut) -> @location(0) vec4<f32> {
         default: {
             // Cells: a grid of tiles flips over to B in random order.
             let cell = floor(in.uv * vec2<f32>(round(9.0 * aspect), 9.0));
-            m = step(trans_hash(cell), k);
+            m = step(hash21(cell), k);
         }
     }
     return vec4<f32>(textureSampleLevel(src, samp, uv, 0.0).rgb, clamp(m, 0.0, 1.0));

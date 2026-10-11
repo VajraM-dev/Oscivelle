@@ -88,7 +88,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     };
 
     // A change landing near a drop flashes (engine 2: clears the feedback) instead of its usual transition.
-    let hit = Transition { kind: if req.engine >= 2 { TransitionKind::Reset } else { TransitionKind::Flash }, duration: 0.0 };
+    let hit = Transition::drop_cut(req.engine);
     let flash_near_drop = |t: f64, other: Transition| if near_drop(t) { hit } else { other };
     let change_transition = |c: &TrackChange| match c.kind {
         ChangeKind::Cut => flash_near_drop(c.time, CUT),
@@ -136,8 +136,8 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     // Hard cuts (flash, reset) are placed first, so a morph too close to one is the shot that gets dropped.
     // Engine 1 keeps its frozen order (only Flash first; its Cut shots stay in the second group).
     if req.mode != Mode::Markers {
-        let is_flash = |s: &&Shot| if req.engine >= 2 { !s.transition.kind.is_morph() } else { s.transition.kind == TransitionKind::Flash };
-        for s in req.shots.iter().filter(is_flash).chain(req.shots.iter().filter(|s| !is_flash(s))) {
+        let is_hard = |s: &&Shot| if req.engine >= 2 { !s.transition.kind.is_morph() } else { s.transition.kind == TransitionKind::Flash };
+        for s in req.shots.iter().filter(is_hard).chain(req.shots.iter().filter(|s| !is_hard(s))) {
             let t = snap(a, s.time, bar);
             if t < 8.0 * bar || a.duration - t < 8.0 * bar || bounds.iter().any(|b| (b.start - t).abs() < 8.0 * bar) {
                 continue;
@@ -338,7 +338,7 @@ fn phrase_variants(a: &Analysis, segs: Vec<Segment>, blocks: &Blocks, gen_dir: &
     let bar = bar_len(a);
     let mut out = Vec::with_capacity(segs.len());
     for mut s in segs {
-        let Some(mut g) = s.genome.clone().filter(|_| !s.locked && !s.variant) else {
+        let Some(mut g) = s.genome.clone().filter(|_| !s.locked) else {
             out.push(s);
             continue;
         };
@@ -480,7 +480,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
     let bar = bar_len(a);
     let beat_len = bar / 4.0;
     let segs = &plan.segments;
-    let i = segs.partition_point(|s| s.start <= t).saturating_sub(1);
+    let seg_at = |t: f64| segs.partition_point(|s| s.start <= t).saturating_sub(1);
+    let i = seg_at(t);
 
     // Audio-driven part, shared by both scenes of a morph.
     let kick = onset_env(&a.kicks, t, 0.12);
@@ -613,13 +614,9 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         exposure: (1.0 + 0.1 * energy) * (1.0 - 0.85 * dark),
         saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2) * (1.0 - 0.8 * dark),
         post,
-        wipe: morph.map_or(0, |(j, _)| segs[j].transition_in.kind.style()),
-        // A Reset cut clears the feedback on the one step at its start: the step in [start - eps, start + step - eps),
-        // so float rounding of t (start + k/SIM_HZ) neither skips it nor clears twice.
-        reset: [i, i + 1].iter().filter_map(|&j| segs.get(j)).any(|s| {
-            let dt = t - s.start;
-            s.transition_in.kind == TransitionKind::Reset && dt >= -1e-6 && dt < 1.0 / SIM_HZ as f64 - 1e-6
-        }),
+        morph_style: morph.map_or(0, |(j, _)| segs[j].transition_in.kind.style()),
+        // A Reset cut clears the feedback on the first step its segment is active (same lookup as `i`).
+        reset: segs.get(i).is_some_and(|s| s.transition_in.kind == TransitionKind::Reset) && i != seg_at(t - 1.0 / SIM_HZ as f64),
     }
 }
 
@@ -1037,7 +1034,7 @@ mod tests {
         assert!(kinds.len() >= 3 && kinds.iter().all(|k| k != "Cut"), "{kinds:?}");
         let s = &p.segments[2];
         let f = frame_state(&p, &a, &scenes, s.start, 64, 64, Quality::Draft);
-        assert!(f.b.is_some() && f.wipe == s.transition_in.kind.style());
+        assert!(f.b.is_some() && f.morph_style == s.transition_in.kind.style());
         // Hard shots are placed before morph shots: the reset at 32 s wins over the morph that snaps onto it.
         let shots = [
             Shot { time: 30.0, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } },

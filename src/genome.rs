@@ -347,7 +347,7 @@ fn OP(i: i32) -> f32 { return P(12 + i); }
 {OVERLAY}
 fn scene(uv: vec2<f32>) -> vec4<f32> {
     let p = to_centered(uv);
-    var c = backdrop(p) + prev(uv) * {FEEDBACK};
+    var c = backdrop(p) + {FB} * {FEEDBACK};
     let o = overlay(p);
     c = mix(c, o.rgb, clamp(o.a, 0.0, 1.0));
     return vec4<f32>(c, 1.0);
@@ -467,16 +467,18 @@ pub fn layers_wgsl(g: &Genome, blocks: &Blocks) -> Result<Option<String>> {
     }
     let [bd, ov] = blocks.layer_parts(g)?;
     let fb = g.feedback.unwrap_or(1.0).clamp(0.0, 1.5);
+    // Engine 2: a comp block reframes the feedback for display only (this pass is never fed back). Without one
+    // the source is byte-for-byte the old one.
+    let comp = blocks.comp_part(g)?;
     let src = LAYERS
+        .replace("{FB}", if comp.is_some() { "comp(uv)" } else { "prev(uv)" })
         .replace("{IMG}", &img_wgsl(g))
         .replace("{FONT}", &crate::font::wgsl(&g.text))
         .replace("{BACKDROP}", bd.map_or(NO_BACKDROP, |b| &b.wgsl))
         .replace("{OVERLAY}", ov.map_or(NO_OVERLAY, |b| &b.wgsl))
         .replace("{FEEDBACK}", &format!("{fb:?}"));
-    // Engine 2: a comp block reframes the feedback for display only (this pass is never fed back). Without one
-    // the source is byte-for-byte the old one.
-    Ok(Some(match blocks.comp_part(g)? {
-        Some(c) => src.replace("backdrop(p) + prev(uv) * ", "backdrop(p) + comp(uv) * ") + "\n" + &c.wgsl,
+    Ok(Some(match comp {
+        Some(c) => src + "\n" + &c.wgsl,
         None => src,
     }))
 }
@@ -684,26 +686,36 @@ pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Gen
     }
     g.regime = regime.name.into();
     g.post = regime.post;
+    retint(&mut g);
+    g
+}
+
+/// A mono finishing look tints with palette colour 2.
+fn retint(g: &mut Genome) {
     if g.post.tint_amount > 0.0 {
         g.post.tint = crate::scenes::hex(&g.palette[2]).unwrap_or([1.0; 3]);
     }
-    g
+}
+
+/// End of a change to `g`: retint if the palette changed, then prune.
+fn settle(g: &Genome, mut out: Genome, blocks: &Blocks) -> Genome {
+    if out.palette != g.palette {
+        retint(&mut out);
+    }
+    out.prune(blocks);
+    out
 }
 
 /// Engine-2 mutation: a third of the time swap the space fold (or drop it), a third the blend mode, else
 /// `mutate` (blocks / palette / params). The regime never changes: it belongs to the segment.
 pub fn mutate_v2(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
-    let mut out = match h(1) % 3 {
+    let out = match h(1) % 3 {
         0 if !blocks.space.is_empty() => Genome { space: if h(2) % 4 == 0 { String::new() } else { nth_id(&blocks.space, h(3) as usize) }, ..g.clone() },
         1 => Genome { blend: pick_blend(h(4)), ..g.clone() },
         _ => mutate(g, blocks, r),
     };
-    if out.palette != g.palette && out.post.tint_amount > 0.0 {
-        out.post.tint = crate::scenes::hex(&out.palette[2]).unwrap_or([1.0; 3]);
-    }
-    out.prune(blocks);
-    out
+    settle(g, out, blocks)
 }
 
 /// Engine-2 phrase variant: the same look with one structural change: another space fold (or none),
@@ -723,11 +735,7 @@ pub fn vary(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
         1 if !blocks.comp.is_empty() => out.comp = other(&blocks.comp, &g.comp, 3),
         _ => out.palette = cosine_palette(h(4)),
     }
-    if out.palette != g.palette && out.post.tint_amount > 0.0 {
-        out.post.tint = crate::scenes::hex(&out.palette[2]).unwrap_or([1.0; 3]);
-    }
-    out.prune(blocks);
-    out
+    settle(g, out, blocks)
 }
 
 fn nth_id(list: &[Block], i: usize) -> String {
@@ -745,6 +753,18 @@ mod tests {
     fn genome() -> Genome {
         let pal = ["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()];
         Genome { motion: "motion_ink".into(), emitter: "emit_rings".into(), colour: "colour_hue".into(), palette: pal, params: BTreeMap::new(), ..Default::default() }
+    }
+
+    #[test]
+    fn emitters_survive_the_dual_rename() {
+        // dual renames `fn emit(` -> `fn emit_b(` and `EP(` -> `EP2(` by plain text replace.
+        for b in &blocks().emitter {
+            assert_eq!(b.wgsl.matches("fn emit(").count(), 1, "{}: one fn emit(", b.id);
+            for (k, _) in b.wgsl.match_indices("EP(") {
+                let prev = b.wgsl[..k].chars().next_back();
+                assert!(!prev.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_'), "{}: identifier ending in EP(", b.id);
+            }
+        }
     }
 
     #[test]

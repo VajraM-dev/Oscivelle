@@ -230,7 +230,6 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
     // Unset = what the saved plan used (so a plain re-run reuses it), else all generated with engine 2 (its takes
     // share no screen time with the hand-made scenes) and half with engine 1.
     let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(if engine >= 2 { 1.0 } else { 0.5 });
@@ -349,7 +348,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             // Drops are hard cuts into a new shot: --layers flashes; engine 2 resets (black, then the new world
             // rebuilds), with or without --layers. --layers also morphs into each build-up.
-            let drop_cut = Transition { kind: if looks >= 2 { TransitionKind::Reset } else { TransitionKind::Flash }, duration: 0.0 };
+            let drop_cut = Transition::drop_cut(looks);
             let shots: Vec<Shot> = analysis
                 .drops
                 .iter()

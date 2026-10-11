@@ -278,7 +278,7 @@ pub enum TransitionKind {
 impl TransitionKind {
     /// Blends two looks over `duration` (Morph and the styled morphs).
     pub fn is_morph(self) -> bool {
-        matches!(self, Self::Morph | Self::Wipe | Self::Iris | Self::Melt | Self::Cells)
+        MORPHS.contains(&self)
     }
 
     /// trans.wgsl style index (0 = Morph's constant crossfade, also every non-morph kind).
@@ -301,6 +301,13 @@ pub struct Transition {
     pub kind: TransitionKind,
     /// Seconds (Morph only; centred on segment start).
     pub duration: f64,
+}
+
+impl Transition {
+    /// A drop's hard cut: engine 2 resets (clears the feedback), engine 1 flashes.
+    pub fn drop_cut(engine: u32) -> Transition {
+        Transition { kind: if engine >= 2 { TransitionKind::Reset } else { TransitionKind::Flash }, duration: 0.0 }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -451,7 +458,7 @@ pub struct FrameState {
     /// Finishing look (finish pass).
     pub post: Post,
     /// Morph style (TransitionKind::style; 0 = constant crossfade).
-    pub wipe: u32,
+    pub morph_style: u32,
     /// Clear the feedback before this step (a Reset cut starts here).
     pub reset: bool,
 }

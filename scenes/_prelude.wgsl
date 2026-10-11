@@ -108,14 +108,7 @@ fn warp(uv: vec2<f32>, zoom: f32, angle: f32, swirl: f32, center: vec2<f32>) -> 
     return to_uv(p + center);
 }
 
-// pcg(), VsOut and vs_main come from src/render/common.wgsl (prepended before this file).
-
-// Integer hash of the exact float bits: no precision seams at large coordinates
-// (a float fract/sin hash shards fbm once coords grow).
-fn hash21(p: vec2<f32>) -> f32 {
-    let b = bitcast<vec2<u32>>(p + 0.0);
-    return f32(pcg(b.x ^ pcg(b.y)) >> 8u) / 16777216.0;
-}
+// pcg(), hash21(), VsOut and vs_main come from src/render/common.wgsl (prepended before this file).
 
 fn noise2(p: vec2<f32>) -> f32 {
     let i = floor(p);

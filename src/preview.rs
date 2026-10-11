@@ -21,7 +21,8 @@ const MAX_STEPS: u32 = 4;
 pub fn run(audio: &Path, analysis: &Analysis, plan: &Plan, scenes: &[Scene], scenes_dir: &Path, quality: Quality, start: f64) -> Result<()> {
     let event_loop = EventLoop::new()?;
     let plates = crate::plates::load_all(&plan.plates);
-    let mut app = App { audio, analysis, plan, scenes, scenes_dir, quality, start, plates, live: None, err: None };
+    let history = crate::render::needs_history(plan, scenes);
+    let mut app = App { audio, analysis, plan, scenes, scenes_dir, quality, start, plates, history, live: None, err: None };
     event_loop.run_app(&mut app)?;
     app.err.map_or(Ok(()), Err)
 }
@@ -36,6 +37,8 @@ struct App<'a> {
     start: f64,
     /// Decoded once; reused when a resize rebuilds the engine.
     plates: Vec<Vec<u8>>,
+    /// Whether a used look reads hist(); also reused on resize.
+    history: bool,
     live: Option<Live>,
     err: Option<anyhow::Error>,
 }
@@ -79,7 +82,7 @@ impl App<'_> {
         config.format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(config.format);
         surface.configure(&device, &config);
         // ponytail: layer files aren't hot-reloaded; restart --dev after editing a back_/over_ block.
-        let engine = Engine::new(&device, &queue, self.scenes, self.scenes_dir, self.quality, config.width, config.height, config.format, &self.plates, crate::render::needs_history(self.plan, self.scenes));
+        let engine = Engine::new(&device, &queue, self.scenes, self.scenes_dir, self.quality, config.width, config.height, config.format, &self.plates, self.history);
 
         let mut sink = rodio::DeviceSinkBuilder::open_default_sink().map_err(|e| anyhow!("audio output: {e}"))?;
         sink.log_on_drop(false);
@@ -145,11 +148,6 @@ impl App<'_> {
                     eprintln!("{e:#}");
                 }
                 l.fs = Some(fs);
-                // One history frame per output frame, as in a render.
-                let sub = (SIM_HZ / OUT_FPS) as i64;
-                if ((l.sim_t * SIM_HZ as f64).round() as i64).rem_euclid(sub) == sub - 1 {
-                    l.engine.push_history(l.sim_t);
-                }
                 n += 1;
             }
             l.dirty |= n > 0;
@@ -216,7 +214,7 @@ impl ApplicationHandler for App<'_> {
                     l.config.height = size.height;
                     l.surface.configure(&l.device, &l.config);
                     // Sim/out textures and finish uniforms are sized at construction: rebuild (feedback restarts; sim_t kept).
-                    l.engine = Engine::new(&l.device, &l.queue, self.scenes, self.scenes_dir, self.quality, size.width, size.height, l.config.format, &self.plates, crate::render::needs_history(self.plan, self.scenes));
+                    l.engine = Engine::new(&l.device, &l.queue, self.scenes, self.scenes_dir, self.quality, size.width, size.height, l.config.format, &self.plates, self.history);
                     l.fs = None; // stale: carries the old sim size
                     l.dirty = false;
                 }
