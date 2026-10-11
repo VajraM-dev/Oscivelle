@@ -745,14 +745,17 @@ fn pick_blend(h: u64) -> String {
     if h % 2 == 0 { String::new() } else { BLENDS[((h >> 8) % BLENDS.len() as u64) as usize].into() }
 }
 
-/// Engine-2 random genome: `random`'s blocks plus a space fold (none a sixth of the time), a blend mode
-/// (add half the time), a cosine palette half the time, a recipe (stateless or dual a sixth of the time
-/// each), a comp framing a third of the time, and the segment's `regime` with its finishing look
-/// (mono tints with palette colour 2). `r` = 64-bit hash.
+/// Engine-2 random genome from `grammar`'s blocks (Blocks::grammar_pool): `random`'s blocks plus a space fold
+/// a third of the time, a blend mode (add half the time), a cosine palette half the time, a recipe (stateless
+/// or dual a sixth of the time each), a comp framing a third of the time, and the segment's `regime` with its
+/// finishing look (mono tints with palette colour 2). `r` = 64-bit hash.
 pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime, grammar: &str) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
+    // Only the grammar's blocks ("" = all).
+    let blocks = &blocks.grammar_pool(grammar);
     let mut g = random(blocks, r);
-    if !blocks.space.is_empty() && h(1) % 6 != 0 {
+    // A fold a third of the time (when the grammar has any).
+    if !blocks.space.is_empty() && h(1) % 3 == 0 {
         g.space = nth_id(&blocks.space, h(2) as usize);
     }
     g.blend = pick_blend(h(3));
@@ -812,22 +815,30 @@ pub fn mutate_v2(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     settle(g, out, blocks)
 }
 
-/// Engine-2 phrase variant: the same look with one structural change: another space fold (or none),
-/// another comp framing (or none), or a fresh cosine palette. Never the motion, emitter, blend, recipe or
-/// regime (those can go black, and variants aren't judged). `r` = 64-bit hash.
+/// Engine-2 phrase variant: the same look with one structural change, inside its grammar: a fold or comp
+/// framing dropped (half the time one is there) or swapped for another of the grammar's, or a fresh cosine
+/// palette. Never the motion, emitter, blend, recipe, grammar or regime (those can go black, and variants
+/// aren't judged). `r` = 64-bit hash.
 // ponytail: unjudged; run variants through the judge if one ever renders black.
 pub fn vary(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
-    // Another id of `list` or "" (none), never the current one.
-    let other = |list: &[Block], cur: &str, k: u64| {
-        let ids: Vec<&str> = std::iter::once("").chain(list.iter().map(|b| b.id.as_str())).filter(|id| *id != cur).collect();
-        ids[(h(k) % ids.len() as u64) as usize].to_string()
+    let pool = blocks.grammar_pool(&g.grammar);
+    // The new id for `cur` of `list`: "" half the time one is set, else another id; None = no change possible.
+    let other = |list: &[Block], cur: &str, k: u64| -> Option<String> {
+        let ids: Vec<&str> = list.iter().map(|b| b.id.as_str()).filter(|id| *id != cur).collect();
+        if ids.is_empty() || (!cur.is_empty() && h(k) % 2 == 0) {
+            return (!cur.is_empty()).then(String::new);
+        }
+        Some(ids[(h(k + 10) % ids.len() as u64) as usize].to_string())
     };
     let mut out = g.clone();
-    match h(1) % 3 {
-        0 if !blocks.space.is_empty() => out.space = other(&blocks.space, &g.space, 2),
-        1 if !blocks.comp.is_empty() => out.comp = other(&blocks.comp, &g.comp, 3),
-        _ => out.palette = cosine_palette(h(4)),
+    let swapped = match h(1) % 3 {
+        0 => other(&pool.space, &g.space, 2).map(|s| out.space = s),
+        1 => other(&pool.comp, &g.comp, 3).map(|c| out.comp = c),
+        _ => None,
+    };
+    if swapped.is_none() {
+        out.palette = cosine_palette(h(4));
     }
     settle(g, out, blocks)
 }
@@ -979,7 +990,7 @@ mod tests {
             b.add("space", space_block(&format!("space_t{k}"), "")).unwrap();
         }
         let reg = &crate::regime::REGIMES[1];
-        let gs: Vec<Genome> = (0..48).map(|r| random_v2(&b, crate::types::hash(9, r), reg, "")).collect();
+        let gs: Vec<Genome> = (0..96).map(|r| random_v2(&b, crate::types::hash(9, r), reg, "")).collect();
         assert_eq!(gs[3], random_v2(&b, crate::types::hash(9, 3), reg, ""));
         let distinct = |f: &dyn Fn(&Genome) -> String| gs.iter().map(f).collect::<std::collections::HashSet<_>>().len();
         assert_eq!(distinct(&|g| g.space.clone()), 4, "none + 3 folds");
@@ -1111,5 +1122,92 @@ mod tests {
         for d in gs.iter().filter(|g| g.template == "dual") {
             assert!((0..64).all(|r| { let m = mutate_v2(d, &b, crate::types::hash(5, r)); m.emitter != m.emitter_b }));
         }
+    }
+
+    /// The library as BLOCK_TAGS describes it (empty sources): the picking logic without the files.
+    fn tagged_library() -> Blocks {
+        let blk = |id: &str| Block { id: id.into(), params: vec![], wgsl: String::new(), toml: String::new() };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![blk("colour_x")], backdrop: vec![], overlay: vec![], space: vec![], comp: vec![], palettes: vec![genome().palette] };
+        for (id, _, _) in BLOCK_TAGS {
+            let kind = match id.split('_').next().unwrap() {
+                "emit" => "emitter",
+                k => k,
+            };
+            b.add(kind, blk(id)).unwrap();
+        }
+        b
+    }
+
+    /// The point of grammars: over many takes few looks are centred, spinning or zooming, every grammar
+    /// appears, and only radial looks ever use a centred, spinning, tunnel or 3D block.
+    #[test]
+    fn takes_vary_their_visual_grammar() {
+        let b = tagged_library();
+        let looks = |id: &str| BLOCK_TAGS.iter().find(|t| t.0 == id).map_or("", |t| t.2);
+        let reg = &crate::regime::REGIMES[0];
+        let n = 4000u64;
+        let (mut centred, mut spin, mut zoom, mut plain) = (0u64, 0u64, 0u64, 0u64);
+        let mut seen = std::collections::HashSet::new();
+        for s in 0..n {
+            let r = crate::types::hash(21, s);
+            // As evolve::best_v2 draws it.
+            let grammar = GRAMMARS[(crate::types::hash(r, 0x6A4D) % GRAMMARS.len() as u64) as usize];
+            let g = random_v2(&b, r, reg, grammar);
+            assert_eq!(g.grammar, grammar);
+            seen.insert(grammar);
+            let mut ids = vec![&g.emitter, &g.emitter_b, &g.space, &g.comp];
+            if g.template != "stateless" {
+                ids.push(&g.motion);
+            }
+            let f: String = ids.iter().map(|id| looks(id)).collect();
+            if grammar != "radial" {
+                assert!(!f.contains(['R', 'T', 'C', 'D']), "{grammar}: {g:?}");
+            }
+            centred += f.contains('C') as u64;
+            spin += f.contains('R') as u64;
+            zoom += f.contains('Z') as u64;
+            plain += !f.contains(['R', 'Z', 'T', 'C', 'D']) as u64;
+        }
+        let pct = |k: u64| 100 * k / n;
+        // Before grammars (sim.py): centred 91%, spin 76%, zoom 68%, none of them 3%.
+        assert!(pct(centred) <= 20 && pct(spin) <= 20 && pct(zoom) <= 25 && pct(plain) >= 70, "centred {}% spin {}% zoom {}% plain {}%", pct(centred), pct(spin), pct(zoom), pct(plain));
+        assert_eq!(seen.len(), GRAMMARS.len());
+        // Each non-radial grammar has enough to vary: at least two motions and three emitters.
+        for gr in &GRAMMARS[1..] {
+            let p = b.grammar_pool(gr);
+            assert!(p.motion.len() >= 2 && p.emitter.len() >= 3, "{gr}");
+        }
+    }
+
+    /// Every block a grammar can use is tagged and loads; tags name real grammars.
+    #[test]
+    fn block_tags_cover_the_v2_library() {
+        let b = blocks().pinned(2);
+        let lib: Vec<&Block> = [&b.motion, &b.emitter, &b.space, &b.comp].into_iter().flatten().collect();
+        for x in &lib {
+            assert!(BLOCK_TAGS.iter().any(|t| t.0 == x.id), "{} has no BLOCK_TAGS entry", x.id);
+        }
+        for (id, gs, _) in BLOCK_TAGS {
+            assert!(gs.split(' ').all(|g| GRAMMARS.contains(&g)), "{id}: {gs}");
+            assert!(lib.iter().any(|x| x.id == *id), "{id} is not in the engine-2 library");
+        }
+    }
+
+    #[test]
+    fn vary_stays_in_the_grammar_and_drops_folds() {
+        let b = tagged_library();
+        let g = Genome { space: "space_tile".into(), grammar: "grid".into(), regime: "calm".into(), ..random(&b.grammar_pool("grid"), 3) };
+        let mut dropped = 0;
+        for r in 0..64u64 {
+            let v = vary(&g, &b, crate::types::hash(8, r));
+            let p = b.grammar_pool("grid");
+            assert!(v.space.is_empty() || p.space.iter().any(|x| x.id == v.space), "{}", v.space);
+            assert!(v.comp.is_empty() || p.comp.iter().any(|x| x.id == v.comp), "{}", v.comp);
+            dropped += v.space.is_empty() as u32;
+        }
+        assert!(dropped >= 4, "a fold is dropped about a sixth of the time: {dropped}");
+        // A flow look has no folds: a fold change becomes a palette change, never a no-op.
+        let f = Genome { grammar: "flow".into(), space: String::new(), ..g.clone() };
+        assert!((0..32u64).all(|r| vary(&f, &b, crate::types::hash(9, r)) != f));
     }
 }
