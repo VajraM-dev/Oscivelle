@@ -13,7 +13,7 @@ foreach ($f in git ls-files scenes) {
     Copy-Item $f $dest
 }
 Copy-Item -Recurse ffmpeg\* $out
-Copy-Item ASSUMPTIONS.md, README.md, docs\USAGE.md $out -ErrorAction SilentlyContinue
+Copy-Item LICENSE, ASSUMPTIONS.md, README.md, docs\USAGE.md $out -ErrorAction SilentlyContinue
 Compress-Archive -Path "$out\*" -DestinationPath dist\visualiser.zip
 Write-Host "dist\visualiser.zip"
 
