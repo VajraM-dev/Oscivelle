@@ -35,27 +35,18 @@ pub fn run(c: &crate::llm::AiConfig, judge: &mut crate::score::Judge, scenes_dir
         "required": ["id", "wgsl", "toml"],
     });
     let tmp = std::env::temp_dir().join("visualiser_author");
-    let mut user = format!("Write a new scene: {prompt}");
-    for attempt in 1..=3 {
-        println!("writing a scene (attempt {attempt}/3) ...");
-        let v = crate::llm::call_tool(c, &system, &user, "submit_scene", "Submit the finished scene.", schema.clone(), 8000)?;
+    let user = format!("Write a new scene: {prompt}");
+    let id = crate::llm::attempts(c, &system, &user, "submit_scene", "Submit the finished scene.", &schema, 8000, "writing a scene", |v| {
         let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
-        let (id, wgsl, toml) = (s("id"), s("wgsl"), s("toml"));
-        match try_scene(judge, scenes_dir, analysis, &tmp, &id, &wgsl, &toml) {
-            Ok(()) => {
-                for ext in ["wgsl", "toml"] {
-                    let f = format!("{id}.{ext}");
-                    std::fs::copy(tmp.join(&f), scenes_dir.join(&f)).with_context(|| format!("saving {f}"))?;
-                }
-                return Ok(id);
-            }
-            Err(e) => {
-                println!("  rejected: {e:#}");
-                user += &format!("\n\nYour previous attempt failed: {e:#}. Fix it and resubmit.");
-            }
-        }
+        let id = s("id");
+        try_scene(judge, scenes_dir, analysis, &tmp, &id, &s("wgsl"), &s("toml"))?;
+        Ok(id)
+    })?;
+    for ext in ["wgsl", "toml"] {
+        let f = format!("{id}.{ext}");
+        std::fs::copy(tmp.join(&f), scenes_dir.join(&f)).with_context(|| format!("saving {f}"))?;
     }
-    bail!("the AI did not produce a working scene in 3 attempts")
+    Ok(id)
 }
 
 /// Writes the scene to `tmp`, parses, compiles and scores it. Retrying with the same id recompiles:
@@ -70,10 +61,7 @@ fn try_scene(judge: &mut crate::score::Judge, scenes_dir: &Path, analysis: &crat
     std::fs::write(tmp.join(format!("{id}.wgsl")), wgsl)?;
     std::fs::write(tmp.join(format!("{id}.toml")), toml)?;
     let scene = load_all(tmp)?.remove(0);
-    if judge.judge(scene, analysis, 60.0f64.min(analysis.duration / 2.0), 4.0)?.is_none() {
-        bail!("renders too dark, static, flooded or noisy");
-    }
-    Ok(())
+    judge.audition(scene, analysis)
 }
 
 /// Matches ^[a-z][a-z0-9_]{2,30}$ and isn't taken in `scenes_dir`.

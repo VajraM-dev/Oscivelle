@@ -85,13 +85,13 @@ struct Cli {
     /// Copy segment N's generated scene into scenes/ as a hand-made one (keep a look you love).
     #[arg(long)]
     keep: Option<usize>,
-    /// Describe the visuals in words (needs an AI key: see --setup-ai).
+    /// Describe the visuals in your own words; the AI tunes, combines and, when needed, writes new shader blocks (needs an AI service: see --setup-ai).
     #[arg(long)]
     vibe: Option<String>,
-    /// Store an Anthropic or Amazon Bedrock API key for the AI features.
+    /// Set up an OpenAI-compatible AI service (URL, key, model) for the AI features.
     #[arg(long)]
     setup_ai: bool,
-    /// Remove the stored AI key.
+    /// Remove the stored AI settings.
     #[arg(long)]
     forget_ai: bool,
     /// Dev: have the AI write a new hand-editable scene from a description (needs --setup-ai), then audition it with --dev --scene <id>.
@@ -138,13 +138,16 @@ fn run(cli: Cli) -> Result<()> {
     }
     if cli.forget_ai {
         llm::forget()?;
-        println!("AI key removed.");
+        println!("AI settings removed.");
         return Ok(());
     }
     let audio = std::path::absolute(cli.audio.as_deref().ok_or_else(|| anyhow!("no audio file given (run with no arguments for guided mode)"))?)?;
     if !audio.is_file() {
         bail!("not found: {}", audio.display());
     }
+    // Everything but the videos goes to the track's data folder, so the audio's folder stays clean.
+    let data = data_dir(&audio)?;
+    eprintln!("project data: {}", data.display());
     // Beside the exe (packaged zip), else ./scenes, else the source tree's (running a dev build from anywhere).
     let scenes_dir = cli.scenes.clone().unwrap_or_else(|| {
         [beside_exe("scenes"), Some("scenes".into()), Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes"))]
@@ -158,10 +161,10 @@ fn run(cli: Cli) -> Result<()> {
         bail!("--generated must be between 0 and 1");
     }
 
-    let analysis = load_or_analyse(&audio, cli.reanalyse)?;
+    let analysis = load_or_analyse(&audio, &data, cli.reanalyse)?;
 
     if let Some(prompt) = &cli.author {
-        let c = llm::load().ok_or_else(|| anyhow!("--author needs an AI key: run visualiser --setup-ai"))?;
+        let c = llm::load().ok_or_else(|| anyhow!("--author needs an AI service: run visualiser --setup-ai"))?;
         let mut judge = score::Judge::new(&scenes, &scenes_dir, cli.cpu)?;
         let id = author::run(&c, &mut judge, &scenes_dir, &analysis, prompt)?;
         println!("new scene: scenes/{id}.wgsl  →  try: visualiser {} --dev --scene {id}", audio.display());
@@ -182,7 +185,7 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
 
-    let plan_path = sibling(&audio, "plan.json");
+    let plan_path = data.join("plan.json");
     let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
     // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
     let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
@@ -194,8 +197,13 @@ fn run(cli: Cli) -> Result<()> {
         && cli.markers.is_none()
         && cli.scene.is_none()
         && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()));
+    let gen_dir = data.join("gen");
+    // The vibe runs before blocks load, so the blocks it writes are included. Its judge is reused by evolution.
+    let (judge, seeds) = match &cli.vibe {
+        Some(v) if !reuse && generated > 0.0 && cli.keep.is_none() => vibe_seeds(&cli, v, &scenes, &scenes_dir, &gen_dir, &analysis, &data),
+        _ => (None, Vec::new()),
+    };
     // Blocks only when something is (or was) generated.
-    let gen_dir = sibling(&audio, "gen");
     let blocks = if generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
         Some(genome::Blocks::load(&scenes_dir.join("blocks"))?)
     } else {
@@ -222,18 +230,23 @@ fn run(cli: Cli) -> Result<()> {
                     p.segments.retain(|s| s.locked);
                 }
             }
-            // Judge + vibe seeds, made on the first segment that is actually generated.
+            // The judge, made on the first segment that is actually generated (unless the vibe made it).
             let gen = OnceCell::new();
+            if let Some(j) = judge {
+                let _ = gen.set(Ok(RefCell::new(j)));
+            }
+            // Evolution stays on-vibe: random picks and mutations only use the seeds' blocks.
+            let sub = blocks.as_ref().filter(|_| !seeds.is_empty()).map(|b| b.subset(&seeds));
             // Each generated segment starts from a different seed.
             let k = Cell::new(0);
             let budget = if cli.quality == Quality::Draft { 10 } else { 20 };
             let evolved = |start: f64, end: f64, r| {
                 let blocks = blocks.as_ref().filter(|_| generated > 0.0)?;
                 eprintln!("generating a scene for {}..{}", hms(start as u64, false), hms(end as u64, false));
-                let (judge, seeds) = gen.get_or_init(|| generator(&cli, &scenes, &scenes_dir, blocks, &analysis, &audio)).as_ref().ok()?;
+                let judge = gen.get_or_init(|| score::Judge::new(&scenes, &scenes_dir, cli.cpu).map(RefCell::new)).as_ref().ok()?;
                 let i = k.replace(k.get() + 1) % seeds.len().max(1);
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
-                evolve::best(&mut judge.borrow_mut(), blocks, &gen_dir, &analysis, start, end, r, &rotated, budget)
+                evolve::best(&mut judge.borrow_mut(), sub.as_ref().unwrap_or(blocks), &gen_dir, &analysis, start, end, r, &rotated, budget)
             };
             let plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
@@ -283,7 +296,7 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     if let Some(text) = director::chapters(&plan) {
-        let p = sibling(&audio, "chapters.txt");
+        let p = data.join("chapters.txt");
         std::fs::write(&p, text)?;
         eprintln!("wrote {}", p.display());
     }
@@ -320,6 +333,7 @@ fn run(cli: Cli) -> Result<()> {
 
     let job = |out: PathBuf, quality, width, height, debug_overlay| render::RenderJob {
         audio: audio.clone(),
+        parts: data.join(format!("{}.parts", out.file_stem().unwrap_or_default().to_string_lossy())),
         out,
         plan: &plan,
         analysis: &analysis,
@@ -337,7 +351,7 @@ fn run(cli: Cli) -> Result<()> {
     };
 
     if cli.debug {
-        let click = sibling(&audio, "click.wav");
+        let click = data.join("click.wav");
         analysis::write_click_track(&audio, &analysis, &click)?;
         eprintln!("wrote {}", click.display());
         render::render_video(&job(sibling(&audio, "debug.mp4"), Quality::Draft, 1280, 720, true))?;
@@ -347,28 +361,32 @@ fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// The judge (a small headless renderer) and the vibe's starting genomes.
+/// The vibe's starting genomes, plus the judge (a small headless renderer) it made, for evolution.
 /// AI trouble never fails a render: warn and evolve without seeds.
-fn generator(cli: &Cli, scenes: &[scenes::Scene], scenes_dir: &Path, blocks: &genome::Blocks, analysis: &Analysis, audio: &Path) -> Result<(RefCell<score::Judge>, Vec<genome::Genome>)> {
-    let judge = RefCell::new(score::Judge::new(scenes, scenes_dir, cli.cpu)?);
-    let seeds = match &cli.vibe {
-        None => Vec::new(),
-        Some(v) => match llm::load() {
-            None => {
-                eprintln!("warning: no AI key set up (run visualiser --setup-ai); continuing without the vibe");
-                Vec::new()
-            }
-            Some(c) => vibe::genomes(&c, blocks, analysis, v, &sibling(audio, "vibe.json")).unwrap_or_else(|e| {
-                eprintln!("warning: vibe failed ({e:#}); continuing without it");
-                Vec::new()
-            }),
-        },
+fn vibe_seeds(cli: &Cli, v: &str, scenes: &[scenes::Scene], scenes_dir: &Path, gen_dir: &Path, analysis: &Analysis, data: &Path) -> (Option<score::Judge>, Vec<genome::Genome>) {
+    let mut judge = match score::Judge::new(scenes, scenes_dir, cli.cpu) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("warning: vibe needs the scene judge ({e:#}); continuing without it");
+            return (None, Vec::new());
+        }
     };
-    Ok((judge, seeds))
+    let Some(c) = llm::load() else {
+        eprintln!("warning: no AI service set up (run visualiser --setup-ai); continuing without the vibe");
+        return (Some(judge), Vec::new());
+    };
+    let dir = scenes_dir.join("blocks");
+    let seeds = genome::Blocks::load(&dir)
+        .and_then(|b| vibe::run(&c, &mut judge, &dir, gen_dir, &b, analysis, v, &data.join("vibe.json")))
+        .unwrap_or_else(|e| {
+            eprintln!("warning: vibe failed ({e:#}); continuing without it");
+            Vec::new()
+        });
+    (Some(judge), seeds)
 }
 
-fn load_or_analyse(audio: &Path, reanalyse: bool) -> Result<Analysis> {
-    let path = sibling(audio, "analysis.json");
+fn load_or_analyse(audio: &Path, data: &Path, reanalyse: bool) -> Result<Analysis> {
+    let path = data.join("analysis.json");
     if !reanalyse {
         if let Some(a) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
             eprintln!("using saved analysis {}", path.display());
@@ -388,7 +406,19 @@ fn load_or_analyse(audio: &Path, reanalyse: bool) -> Result<Analysis> {
     Ok(a)
 }
 
-/// "<dir>/<stem>.<suffix>" next to the source audio.
+/// The track's data folder: %LOCALAPPDATA%\Visualiser\projects\<stem>-<hash of the full path>
+/// (same-named tracks in different folders don't collide). Created if missing.
+fn data_dir(audio: &Path) -> Result<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let stem = audio.file_stem().unwrap_or_default().to_string_lossy();
+    // Windows paths are case-insensitive.
+    let hash = fnv1a(audio.to_string_lossy().to_lowercase().as_bytes()) & 0xffff_ffff;
+    let dir = base.join("Visualiser").join("projects").join(format!("{stem}-{hash:08x}"));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// "<dir>/<stem>.<suffix>" next to the source audio (videos only).
 fn sibling(audio: &Path, suffix: &str) -> PathBuf {
     let stem = audio.file_stem().unwrap_or_default().to_string_lossy();
     audio.with_file_name(format!("{stem}.{suffix}"))

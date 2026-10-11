@@ -102,7 +102,9 @@ pub fn ask() -> Result<Answers> {
     // Hand-made only has nothing for a vibe to steer.
     if a.generated != Some(0.0) {
         if llm::load().is_some() {
-            let t = Text::new("Describe the vibe (optional, Enter to skip):").prompt()?;
+            let t = Text::new("Describe the vibe in your own words (Enter to skip):")
+                .with_help_message("e.g. clouds and haze, molten gold, rainy neon city. New visuals are written when nothing fits.")
+                .prompt()?;
             a.vibe = Some(t.trim().to_string()).filter(|t| !t.is_empty());
         } else {
             println!("\x1b[2mTip: run \"visualiser --setup-ai\" to describe visuals in words.\x1b[0m");

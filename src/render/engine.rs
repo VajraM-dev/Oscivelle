@@ -500,7 +500,7 @@ mod tests {
         for m in &blocks.motion {
             for em in &blocks.emitter {
                 for c in &blocks.colour {
-                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: blocks.palettes[0].clone() };
+                    let g = crate::genome::Genome { motion: m.id.clone(), emitter: em.id.clone(), colour: c.id.clone(), palette: blocks.palettes[0].clone(), params: Default::default() };
                     gen.push(crate::genome::write(&g, &blocks, &gen_dir).unwrap());
                     names.push(format!("{} + {} + {}", m.id, em.id, c.id));
                 }

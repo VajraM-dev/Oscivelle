@@ -48,7 +48,7 @@ That runs with all defaults: Auto mode, final quality, 1080p at 30 fps, seed 1, 
 Run `visualiser.exe` with no arguments, by double-clicking it or from the Start Menu. It asks a few questions: the audio file (a file dialog opens; if you cancel it, type or drag in a path), an optional tracklist, auto or single mode, the visual style, an optional vibe, full video or a 30-second test, resolution, and optionally seed, titles and film grain. It then prints the equivalent command line, so you can copy it for next time, and renders.
 
 - **Visual style** has three choices: a mix of hand-made and freshly generated scenes (recommended; the default share of 0.5), hand-made only (`--generated 0`), or all freshly generated (`--generated 1`). See [Generated scenes](#generated-scenes---generated---keep).
-- **Describe the vibe** is asked after the style, only when the style includes generated scenes and an AI key is set up. Type a few words or press Enter to skip. Without a key it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
+- **Describe the vibe** is asked after the style, only when the style includes generated scenes and an AI service is set up. Type a few words or press Enter to skip. Without one it prints a tip to run `visualiser --setup-ai` instead. See [AI features](#ai-features---setup-ai---vibe---forget-ai).
 - Dragging a file onto the exe, or using the "Make visuals" right-click entry, skips the questions and runs with that file.
 - In both cases the console stays open when the run ends ("Press Enter to close") so you can read the result or any error.
 - `Esc` quits at any question.
@@ -66,13 +66,17 @@ powershell -File package.ps1
 
 Populate `.\ffmpeg\` first (an ffmpeg build plus its licence), as for the zip.
 
+Only scenes committed to git are packaged (`git ls-files scenes`). Blocks the AI wrote on your machine and scenes you're still trying out stay out of the zip and the installer until you commit them.
+
 The installer:
 
 - Installs per user, with no admin prompt, to `%LOCALAPPDATA%\Programs\Visualiser`.
 - Adds that folder to your user `PATH` (open a new terminal to use `visualiser` from anywhere) and creates a Start Menu entry.
 - Offers an optional desktop shortcut (you can drop audio files on it) and an optional "Make visuals" right-click entry for `.wav`, `.flac`, `.mp3`, `.aiff` and `.aif` files.
 - Offers an optional (unchecked) "Set up AI features now" step that runs `--setup-ai` at the end of the install, and adds a "Set up AI" Start Menu entry for doing it later.
-- Uninstalls cleanly: the `PATH` entry and the right-click menu are removed, and the stored AI key is forgotten (`--forget-ai`).
+- Uninstalls cleanly: the `PATH` entry and the right-click menu are removed, and the stored AI settings are forgotten (`--forget-ai`).
+- The uninstaller asks whether to delete your data too: the project data in `%LOCALAPPDATA%\Visualiser\` (analyses, plans, AI answers) and any scenes or blocks you or the AI added. Your videos are never touched. A silent uninstall keeps the data.
+- Installing over an older version replaces the built-in scenes and blocks and keeps the ones you or the AI added. Your project data is untouched.
 
 The C runtime is linked statically, so no Visual C++ redistributable is needed. The installer is unsigned: Windows SmartScreen may warn. Choose "More info", then "Run anyway".
 
@@ -81,11 +85,13 @@ The C runtime is linked statically, so no Visual C++ redistributable is needed. 
 ## How a run works
 
 ```
-audio ──► Analyse ──► <name>.analysis.json ──► Plan ──► <name>.plan.json ──► Render ──► <name>.mp4
+audio ──► Analyse ──► analysis.json ──► Plan ──► plan.json ──► Render ──► <name>.mp4
           (kicks, beats,                        (scenes, palettes,          (GPU, chunked,
            phrases, drops,                       transitions,                resumable)
            track changes)                        phrase variations)
 ```
+
+Only the videos go next to the audio. `analysis.json`, `plan.json` and the other working files live in the per-track [data folder](#files-written), and every run prints `project data: <folder>`.
 
 1. **Analyse.** Decodes the audio and finds kicks, tempo, beats, downbeats, 8/16/32-bar phrases, band energy, the tension (build-up) curve, drops and track changes. The result is saved and reused next time.
 2. **Plan.** Splits the file into segments (one per track or marker), picks a scene, palette and transition for each, and schedules a variation at each phrase and drop. The result is saved and reused next time. You can edit the plan by hand.
@@ -101,7 +107,7 @@ Because each stage is saved, changing markers, the seed or a single segment re-p
 
 | Argument | Description |
 |---|---|
-| `<AUDIO>` | **Required.** WAV, FLAC, MP3 or AIFF, up to about 2 hours. Output files are written next to it. |
+| `<AUDIO>` | **Required.** WAV, FLAC, MP3 or AIFF, up to about 2 hours. Videos are written next to it; working files go to the [data folder](#files-written). |
 
 ### Mode and markers
 
@@ -157,7 +163,7 @@ To keep a segment you like, set `"locked": true` on it in the plan file. See [Ed
 
 | Option | Description |
 |---|---|
-| `--reanalyse` | Ignores the saved `<name>.analysis.json` and analyses again. Also re-plans. Use it after updating the program or when the audio file changed. |
+| `--reanalyse` | Ignores the saved `analysis.json` and analyses again. Also re-plans. Use it after updating the program or when the audio file changed. |
 | `--replan` | Ignores the saved plan's **unlocked** segments and plans again from the analysis. Locked segments are kept. |
 | `--plan-only` | Stops after writing the analysis, plan and chapters. Doesn't render. Use it to inspect or edit the plan first. |
 
@@ -170,7 +176,7 @@ To keep a segment you like, set `"locked": true` on it in the plan file. See [Ed
 | `--dev` | flag | Opens the live [preview window](#preview-window---dev) instead of rendering. The audio plays and the visuals render in real time. Scene shaders reload when you save them. |
 | `--start <TIME>` | seconds or `mm:ss` | With `--dev`: where playback starts. |
 | `--scene <ID>` | scene id (file name without extension) | Forces **one scene for the whole file**, to audition it. Works with `--dev` and with renders (`--preview` gives `<name>.preview-<id>.<start>s.mp4`). The saved plan is **not** overwritten. |
-| `--debug` | flag | Also writes `<name>.click.wav` (the audio at −6 dB with a click on every kick and a higher click on every downbeat) and `<name>.debug.mp4` (a 720p draft render with an analysis overlay). Use them to check the analysis by ear and by eye. |
+| `--debug` | flag | Also writes `click.wav` (in the data folder; the audio at −6 dB with a click on every kick and a higher click on every downbeat) and `<name>.debug.mp4` (next to the audio; a 720p draft render with an analysis overlay). Use them to check the analysis by ear and by eye. |
 | `--scenes <DIR>` | folder | Loads scenes from another folder. Default: `scenes\` next to the program, else `.\scenes`, else the source tree's `scenes\`. |
 
 **Debug overlay** (in `.debug.mp4` and the `D` key in `--dev`): bars for kick, energy, tension, bass, phrase position and drop, boxes for the beat within the bar, and a beat-phase line.
@@ -224,7 +230,7 @@ visualiser.exe set.flac --seed 7
 
 **Lock what you like, then re-roll the rest:**
 1. `visualiser.exe set.flac --plan-only`
-2. In `set.plan.json`, set `"locked": true` on the segments you like.
+2. In `plan.json` (in the data folder; the run prints `project data: <folder>`), set `"locked": true` on the segments you like.
 3. `visualiser.exe set.flac --seed 8`. Locked segments stay, everything else changes.
 
 **Best quality for YouTube:**
@@ -232,7 +238,7 @@ visualiser.exe set.flac --seed 7
 visualiser.exe track.wav --resolution 1440
 ```
 
-**Check the analysis:** listen to `track.click.wav` and watch `track.debug.mp4`.
+**Check the analysis:** listen to `click.wav` (in the data folder) and watch `track.debug.mp4` (next to the audio).
 ```
 visualiser.exe track.wav --debug --preview 1:00
 ```
@@ -307,7 +313,7 @@ Accepted times are `h:mm:ss`, `mm:ss`, `m:ss.s` or plain seconds (`754.2`), opti
 
 ## Editing the plan file
 
-`<name>.plan.json` is plain JSON and is meant to be read and edited. After editing, run the same command again (same seed and mode, no `--replan`) and it is used as written.
+`plan.json` is plain JSON and is meant to be read and edited. It is in the per-track data folder; every run prints `project data: <folder>`. After editing, run the same command again (same seed and mode, no `--replan`) and it is used as written.
 
 ```jsonc
 {
@@ -368,20 +374,27 @@ A change to the plan, the settings, the analysis or a used scene's shader automa
 
 ## Files written
 
-Everything is written next to the source audio:
+**Next to the audio** only videos are written:
 
 | File | When | What |
 |---|---|---|
 | `<name>.mp4` | full render | The video. |
-| `<name>.preview-<start>s.mp4` | `--preview` | The 30-second preview (with `-<scene>.` in the name when `--scene` is used). |
-| `<name>.analysis.json` | always | Saved analysis, reused next run. |
-| `<name>.plan.json` | always (except with `--scene`) | Saved plan, editable. |
-| `<name>.chapters.txt` | at least 3 sections, each at least 10 s | YouTube chapters (`00:00 Title` lines), first at 00:00, ready to paste into the description. |
-| `<name>.click.wav` | `--debug` | Click track. |
+| `<name>.preview-<start>s.mp4` | `--preview` | The 30-second preview (`<name>.preview-<scene>.<start>s.mp4` when `--scene` is used). |
 | `<name>.debug.mp4` | `--debug` | Analysis overlay video. |
-| `<name>.gen\` | plan with generated scenes | The generated scenes' shaders. Rebuilt from the plan; a new plan removes the ones it no longer uses. |
-| `<name>.vibe.json` | `--vibe` | The AI's answer for your vibe text, cached. |
-| `<name>.parts\` | during a render | Finished chunks. Deleted after a successful render. Safe to delete by hand to force a clean render. |
+
+**Everything else** goes to the per-track data folder `%LOCALAPPDATA%\Visualiser\projects\<name>-<hash>\`. The hash is taken from the audio file's full path, so same-named files in different folders don't collide. Every run prints `project data: <folder>`. Files inside have no name prefix:
+
+| File | When | What |
+|---|---|---|
+| `analysis.json` | always | Saved analysis, reused next run. |
+| `plan.json` | always (except with `--scene`) | Saved plan, editable. |
+| `chapters.txt` | at least 3 sections, each at least 10 s | YouTube chapters (`00:00 Title` lines), first at 00:00, ready to paste into the description. |
+| `click.wav` | `--debug` | Click track. |
+| `gen\` | plan with generated scenes | The generated scenes' shaders. Rebuilt from the plan; a new plan removes the ones it no longer uses. |
+| `vibe.json` | `--vibe` | The AI's answer for your vibe text, cached. |
+| `<video name>.parts\` | during a render | Finished chunks. Deleted after a successful render. Safe to delete by hand to force a clean render. |
+
+Files from older versions next to the audio (`<name>.analysis.json`, `<name>.plan.json`, `<name>.parts\` and so on) are not used any more. Delete them.
 
 ---
 
@@ -472,7 +485,7 @@ Audition with `--dev --scene <id>`, or render `--scene <id> --preview <time>` an
 
 ## Generated scenes (`--generated`, `--keep`)
 
-Besides the hand-made scenes, the program can build new ones from a menu of parts: a **motion** (how the picture flows), an **emitter** (what is drawn), a **colour block** and a palette. This needs no AI and no key.
+Besides the hand-made scenes, the program can build new ones from a library of parts: a **motion** (how the picture flows), an **emitter** (what is drawn), a **colour block** and a palette. This needs no AI and no key.
 
 | Option | Values | Default | Description |
 |---|---|---|---|
@@ -480,7 +493,7 @@ Besides the hand-made scenes, the program can build new ones from a menu of part
 | `--keep <N>` | segment index (0-based, as in `plan.json`) | none | Copies segment N's generated scene into `scenes\` as a normal scene. Doesn't render. |
 
 - Each generated scene is chosen by scoring candidates on **that segment's own music**. The judge renders a few seconds of each candidate small and rejects the dull, the flooded (washed to white), the noisy (TV static) and the deaf (not reacting to the kick). It catches bad ones, not great ones, so you pick favourites with `--keep`.
-- The scenes are written to `<name>.gen\`. The plan stores each scene's recipe, so re-rendering from the saved plan gives the identical video.
+- The scenes are written to `gen\` in the data folder. The plan stores each scene's recipe, so re-rendering from the saved plan gives the identical video.
 - A marker's `@scene_id` and `--scene` always win over generated scenes.
 - `--generated` outside 0..1 is an error. A plain re-run reuses the saved plan's share; a different `--generated` makes a new plan.
 - If the judge can't start (for example no GPU), the plan falls back to hand-made scenes with a warning.
@@ -497,26 +510,30 @@ The scene is written to `scenes\gen_<id>.wgsl` and `.toml`. After that it is a n
 
 ## AI features (`--setup-ai`, `--vibe`, `--forget-ai`)
 
-Optional. You bring your own **Anthropic API key** or **Amazon Bedrock API key**. Without one, everything else works as before.
+Optional. Full details: [AI.md](AI.md). You bring your own **OpenAI-compatible API**: OpenAI, OpenRouter, Groq, Together, a local Ollama / LM Studio / vLLM server, or anything else that serves `/chat/completions`. Answers are requested as strict structured output (`response_format` JSON schema), so the output always has the expected shape; servers without it get a tool call instead. The model needs one of the two (most current models have both). Without one, everything else works as before.
 
 | Option | Description |
 |---|---|
-| `--setup-ai` | Asks which kind of key you have, takes the key (hidden as you type; for Bedrock also the AWS region, default `us-east-1`), tests it with a tiny request and stores it in **Windows Credential Manager**. The installer's "Set up AI features now" checkbox and the Start Menu "Set up AI" entry run the same thing. |
-| `--vibe "<TEXT>"` | Describe the look in words, for example `--vibe "dark and liquid, slow"`. The AI suggests starting looks that the generated scenes then evolve from, still scored on your music. If the share of generated scenes would be 0, `--vibe` makes it 1, since a vibe only steers generated scenes. |
-| `--forget-ai` | Removes the stored key. Uninstalling does this too. |
+| `--setup-ai` | Asks for the API base URL (default `https://api.openai.com/v1`; e.g. `https://openrouter.ai/api/v1`, `http://localhost:11434/v1` for Ollama), the key (hidden as you type; leave empty for local servers that need none) and the model id. It tests them with a tiny request and stores them in **Windows Credential Manager**. The installer's "Set up AI features now" checkbox and the Start Menu "Set up AI" entry run the same thing. |
+| `--vibe "<TEXT>"` | Describe the visuals in your own words, for example `--vibe "dark and liquid, slow"`. The AI tunes the blocks' settings to the vibe, picks looks that the generated scenes then evolve from (still scored on your music), and writes new shader blocks when the library can't express what you asked for. If the share of generated scenes would be 0, `--vibe` makes it 1, since a vibe only steers generated scenes. |
+| `--forget-ai` | Removes the stored settings. Uninstalling does this too. |
 
-**Environment variables** take precedence over the stored key:
+**Environment variables** are used when nothing is stored (`VISUALISER_AI_MODEL` also overrides a stored model):
 
 | Variable | Use |
 |---|---|
-| `ANTHROPIC_API_KEY` | An Anthropic key. |
-| `AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION` | A Bedrock key and its region (`us-east-1` if `AWS_REGION` is unset). |
-| `VISUALISER_AI_MODEL` | Overrides the model id. Defaults: `claude-sonnet-5-5` (Anthropic), `anthropic.claude-sonnet-5-5` (Bedrock). |
+| `VISUALISER_AI_MODEL` | The model id. Required for the env-var setup; on its own it overrides the stored model. |
+| `OPENAI_API_KEY` | The key. |
+| `OPENAI_BASE_URL` | The base URL (default `https://api.openai.com/v1`). |
 
-With a Bedrock key, `--setup-ai` also asks for the model id. A bare id like `anthropic.claude-haiku-5-5` uses Bedrock's Messages endpoint (`bedrock-mantle`); an inference-profile id like `global.anthropic.claude-haiku-5-5` (or an ARN) uses the InvokeModel API (`bedrock-runtime`) instead. Some accounts can only use one of the two, so use whichever id works in your Bedrock console. If the model answers 403/404, setup tries the models open to every Bedrock account (`anthropic.claude-sonnet-5`, `anthropic.claude-haiku-4-5`, `anthropic.claude-opus-4-8`) and saves the first that works.
+With nothing stored, the env vars are used when `VISUALISER_AI_MODEL` is set together with `OPENAI_API_KEY` or `OPENAI_BASE_URL`.
 
-- The AI only picks from the block menu. In `--vibe` it never writes shader code.
-- The answer is cached in `<name>.vibe.json`. The same vibe text on the same file makes no new call, so re-renders are identical. A new text asks again.
+- The blocks are a starting vocabulary, not a limit. The AI tunes their settings to the vibe, keeps the evolution to looks that fit, and writes new shader blocks (motion, emitter or colour) when the library can't express what you asked for.
+- New blocks are compile-checked and test-rendered (3 attempts each). They are saved in `scenes\blocks\` and become part of the library for later renders. Delete a block's `.wgsl` and `.toml` to remove it.
+- After the AI call it prints one line about what the visuals will look like, and any new blocks it wrote.
+- The music still picks the winner among the on-vibe looks.
+- The answer is cached in `vibe.json` in the data folder (the note and the looks). The same vibe text on the same file makes no new call, so re-renders are identical. A new text asks again.
+- Cost: the first use of a new vibe can make several AI calls, one design call plus up to 3 per new block.
 - AI trouble never fails a render. With no key, or if the call fails, you get a warning and the scenes are evolved without the vibe.
 - The key is never printed and never written to project files. It is sent only to the AI service.
 
@@ -524,7 +541,7 @@ With a Bedrock key, `--setup-ai` also asks for the model id. A bare id like `ant
 
 ## Writing scenes with `--author`
 
-A developer tool. Describe a scene and the AI writes a complete, hand-editable scene (`.wgsl` + `.toml`, the format in [Writing scenes](#writing-scenes)). It needs an AI key and the audio file (for scoring).
+A developer tool. Describe a scene and the AI writes a complete, hand-editable scene (`.wgsl` + `.toml`, the format in [Writing scenes](#writing-scenes)). It needs an AI service and the audio file (for scoring).
 
 ```
 visualiser.exe track.wav --author "slow aurora curtains that flare on the kick"
@@ -544,7 +561,7 @@ visualiser.exe track.wav --author "slow aurora curtains that flare on the kick"
 
 The parts generated scenes are built from live in `scenes\blocks\`. A motion, emitter or colour block is `<id>.wgsl` + `<id>.toml` there. The format, the functions each kind must define and the rules are in [`scenes/blocks/CONTRACT.md`](../scenes/blocks/CONTRACT.md).
 
-To add a block: copy an existing block of the kind you want, rename it and prefix its helper functions with the new id, then edit the `.toml` (`kind`, a one-line `description` the AI sees, at most 3 / 3 / 2 params for motion / emitter / colour). Blocks load at start-up, so no recompile is needed.
+To add a block: copy an existing block of the kind you want, rename it and prefix its helper functions with the new id, then edit the `.toml` (`kind`, a one-line `description` the AI sees, at most 3 / 3 / 2 params for motion / emitter / colour). Blocks load at start-up, so no recompile is needed. With `--vibe`, the AI can also write blocks here; they follow the same format.
 
 ---
 
@@ -562,4 +579,4 @@ To add a block: copy an existing block of the kind you want, rename it and prefi
 | Scene changes in the wrong places in a mix | Use a marker file (CUE from your DJ software, or a text list). Auto detection misses in-key blends. |
 | Analysis looks wrong after an update | `--reanalyse`. |
 | Render is very slow | Check the adapter line at start-up. `Microsoft Basic Render Driver` / WARP means no GPU, so use `--quality draft`. |
-| Want a clean re-render | Delete `<name>.parts\` (and `<name>.plan.json` for a fresh plan). |
+| Want a clean re-render | Delete the `<video name>.parts\` folder in the data folder (and `plan.json` there too for a fresh plan). The path is printed as `project data: <folder>` on every run. |

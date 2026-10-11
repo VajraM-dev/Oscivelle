@@ -6,7 +6,12 @@ $out = "dist\visualiser"
 Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $out | Out-Null
 Copy-Item target\release\visualiser.exe $out
-Copy-Item -Recurse scenes "$out\scenes"
+# Only committed scenes: AI-written or experimental ones in the working tree stay out of the package.
+foreach ($f in git ls-files scenes) {
+    $dest = Join-Path $out $f
+    New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+    Copy-Item $f $dest
+}
 Copy-Item -Recurse ffmpeg\* $out
 Copy-Item ASSUMPTIONS.md, README.md, docs\USAGE.md $out -ErrorAction SilentlyContinue
 Compress-Archive -Path "$out\*" -DestinationPath dist\visualiser.zip

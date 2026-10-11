@@ -24,7 +24,7 @@ UninstallDisplayIcon={app}\visualiser.exe
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut (you can also drop audio files on it)"
 Name: contextmenu; Description: "Add ""Make visuals"" to the right-click menu of audio files"
-Name: setupai; Description: "Set up AI features now (needs an Anthropic or Amazon Bedrock API key; you can do it later)"; Flags: unchecked
+Name: setupai; Description: "Set up AI features now (needs an OpenAI-compatible API: URL, key and model; you can do it later)"; Flags: unchecked
 
 [Files]
 Source: "..\dist\visualiser\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -55,6 +55,7 @@ Filename: "{app}\visualiser.exe"; Parameters: "--forget-ai"; RunOnceId: "ForgetA
 
 [Code]
 const EnvKey = 'Environment';
+var DeleteData: Boolean;
 
 // Position of Dir in the ';'-separated Paths (1-based index into Paths), 0 if absent.
 function PathPos(Paths, Dir: string): Integer;
@@ -77,7 +78,19 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var Paths, Dir: string; P: Integer;
 begin
+  // Asked before files go. A silent uninstall keeps the data (default No).
+  if CurUninstallStep = usUninstall then
+    DeleteData := SuppressibleMsgBox('Also delete your Visualiser data?' + #13#10#13#10 +
+      'Saved analyses, plans and AI answers (' + ExpandConstant('{localappdata}\Visualiser') + ')' + #13#10 +
+      'and scenes or blocks you or the AI added.' + #13#10#13#10 +
+      'Your videos are never touched.', mbConfirmation, MB_YESNO, IDNO) = IDYES;
   if CurUninstallStep = usPostUninstall then begin
+    if DeleteData then begin
+      DelTree(ExpandConstant('{localappdata}\Visualiser'), True, True, True);
+      // Installed scenes are already gone; this removes the ones added after install.
+      DelTree(ExpandConstant('{app}\scenes'), True, True, True);
+      RemoveDir(ExpandConstant('{app}'));
+    end;
     if RegQueryStringValue(HKCU, EnvKey, 'Path', Paths) then begin
       Dir := ExpandConstant('{app}');
       P := PathPos(Paths, Dir);

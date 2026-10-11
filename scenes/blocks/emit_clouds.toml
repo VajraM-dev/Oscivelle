@@ -1,0 +1,15 @@
+kind = "emitter"
+description = "Soft atmospheric cloud banks with layered billowing noise, wispy luminous edges, and restrained kick blooms"
+[[param]]
+name = "scale"
+min = 0.7
+max = 1.5
+[[param]]
+name = "opacity"
+min = 0.55
+max = 1.1
+[[param]]
+name = "hue_offset"
+min = 0.0
+max = 1.0
+fixed = true

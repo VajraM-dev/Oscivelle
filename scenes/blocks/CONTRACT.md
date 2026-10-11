@@ -1,7 +1,7 @@
 # Scene blocks
 
 A generated scene = one **motion** + one **emitter** + one **colour** block, glued by the
-template in `src/genome.rs`. Each block is `<id>.wgsl` + `<id>.toml` in this folder. All prelude
+template in `src/genome.rs`. Blocks may also be written by the AI from `--vibe`; they follow this same contract. Each block is `<id>.wgsl` + `<id>.toml` in this folder. All prelude
 helpers (`prev`, `warp`, `pal`, `kick()`, `fbm`, `line_glow`, ...) are available.
 
 ## <id>.toml

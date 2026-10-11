@@ -125,6 +125,14 @@ impl Judge {
         r
     }
 
+    /// The check new AI scenes and blocks must pass: 4 s from mid-song (at most 60 s in) scores at all.
+    pub fn audition(&mut self, scene: Scene, analysis: &Analysis) -> Result<()> {
+        if self.judge(scene, analysis, 60.0f64.min(analysis.duration / 2.0), 4.0)?.is_none() {
+            anyhow::bail!("renders too dark, static, flooded or noisy");
+        }
+        Ok(())
+    }
+
     fn score(&mut self, scene: Scene, analysis: &Analysis, t0: f64, secs: f64) -> Result<Option<f32>> {
         let id = scene.id.clone();
         let mid: Vec<f32> = scene.params.iter().map(|p| (p.min + p.max) / 2.0).collect();

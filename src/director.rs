@@ -580,7 +580,7 @@ mod tests {
         (0..5)
             .map(|k| Scene {
                 id: format!("s{k}"),
-                params: vec![crate::scenes::ParamRange { min: 0.0, max: 1.0, fixed: false }],
+                params: vec![crate::scenes::ParamRange { name: String::new(), min: 0.0, max: 1.0, fixed: false }],
                 palettes: vec![[[0.0; 3]; 4]; 3],
                 wgsl_path: Default::default(),
             })
@@ -652,8 +652,8 @@ mod tests {
         let mut scenes = test_scenes();
         for s in &mut scenes {
             s.params = vec![
-                crate::scenes::ParamRange { min: 0.0, max: 1.0, fixed: true },
-                crate::scenes::ParamRange { min: 2.0, max: 4.0, fixed: false },
+                crate::scenes::ParamRange { name: String::new(), min: 0.0, max: 1.0, fixed: true },
+                crate::scenes::ParamRange { name: String::new(), min: 2.0, max: 4.0, fixed: false },
             ];
         }
         let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Auto, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 0.0, vibe: None, genome_for: None, blocks: None, gen_dir: Path::new(".") };
@@ -678,9 +678,9 @@ mod tests {
         let scenes = test_scenes();
         let block = |id: &str| crate::genome::Block {
             id: id.into(),
-            description: String::new(),
-            params: vec![crate::scenes::ParamRange { min: 0.0, max: 1.0, fixed: false }],
+            params: vec![crate::scenes::ParamRange { name: String::new(), min: 0.0, max: 1.0, fixed: false }],
             wgsl: String::new(),
+            toml: String::new(),
         };
         let blocks = Blocks {
             motion: vec![block("m0"), block("m1")],

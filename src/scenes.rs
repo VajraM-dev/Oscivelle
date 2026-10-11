@@ -3,7 +3,7 @@
 //! scene.toml:
 //!   palettes = [["#0b0221", "#6a00f4", "#f72585", "#4cc9f0"], ...]   # sRGB hex, 4 each
 //!   [[param]]
-//!   name = "zoom"   # label only (ignored, like the scene's own `name`)
+//!   name = "zoom"   # label (blocks key tuned values by it; scenes ignore it)
 //!   min = 1.002
 //!   max = 1.02
 //!   fixed = true   # optional: never audio-modulated
@@ -24,6 +24,9 @@ pub struct Scene {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ParamRange {
+    /// "" when unnamed.
+    #[serde(default)]
+    pub name: String,
     pub min: f32,
     pub max: f32,
     /// Never audio-modulated: integer params (floor/round in the shader), params that multiply
