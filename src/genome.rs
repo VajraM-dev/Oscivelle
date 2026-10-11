@@ -380,6 +380,32 @@ fn scene(uv: vec2<f32>) -> vec4<f32> {
 "#;
 const NO_SPACE: &str = "fn space(p: vec2<f32>) -> vec2<f32> { return p; }";
 
+/// Stateless recipe: the emitter alone, drawn fresh every frame (no trails; crisp, best with raymarched or
+/// dense emitters). Shares TEMPLATE_V2's head; motion is defined but unused.
+const STATELESS_SCENE: &str = r#"fn scene(uv: vec2<f32>) -> vec4<f32> {
+    let p = space(to_centered(uv));
+    let drive = {DRIVE} * (0.9 + 0.6 * punch() + 0.3 * snare() + 0.6 * drop_env()) * (1.0 - 0.6 * anticipation());
+    var col = colour(emit(p)) * drive;
+    col = col / (1.0 + 0.12 * dot(col, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    return vec4<f32>(col, 1.0);
+}
+"#;
+
+/// Dual recipe: the feedback recipe with two emitters; the brighter wins each pixel, B is shown half a hue turn
+/// away and swells on snares, so two worlds interleave.
+const DUAL_SCENE: &str = r#"fn scene(uv: vec2<f32>) -> vec4<f32> {
+    let p = space(to_centered(uv));
+    var col = prev(motion(to_uv(p))) * min(motion_decay() * {DECAY}, 0.995);
+    let drive = {DRIVE} * (0.5 + 0.9 * punch() + 0.3 * snare() + 0.6 * drop_env()) * (1.0 - 0.6 * anticipation());
+    let a = emit(p);
+    let b = emit_b(p) * vec2<f32>(0.7 + 0.6 * snare(), 1.0);
+    let e = select(a, vec2<f32>(b.x, fract(b.y + 0.5)), b.x > a.x);
+    col = blend(col, colour(e) * drive);
+    col = col / (1.0 + 0.12 * dot(col, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    return vec4<f32>(col, 1.0);
+}
+"#;
+
 /// Engine-2 blend modes of the emitter over the feedback; "" = add (the engine-1 recipe).
 pub const BLENDS: [&str; 4] = ["screen", "difference", "multiply", "lighten"];
 
@@ -411,7 +437,19 @@ pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
         return Ok(TEMPLATE.replace("{IMG}", &img_wgsl(g)).replace("{MOTION}", &m.wgsl).replace("{EMITTER}", &e.wgsl).replace("{COLOUR}", &c.wgsl));
     }
     let r = crate::regime::get(&g.regime);
-    Ok(TEMPLATE_V2
+    // A recipe swaps the scene function; everything above it is TEMPLATE_V2's (the feedback recipe is unchanged).
+    let head = &TEMPLATE_V2[..TEMPLATE_V2.find("fn scene(").expect("TEMPLATE_V2 has a scene fn")];
+    let tpl = match g.template.as_str() {
+        "stateless" => format!("{head}{STATELESS_SCENE}"),
+        "dual" => {
+            let eb = blocks.emitter_b_part(g)?.context("a dual look needs emitter_b")?;
+            // Renamed so both emitters link: emit -> emit_b, its params EP -> EP2 (slots 8..10).
+            let b = eb.wgsl.replace("fn emit(", "fn emit_b(").replace("EP(", "EP2(");
+            format!("{head}fn EP2(i: i32) -> f32 {{ return P(8 + i); }}\n{b}\n{DUAL_SCENE}")
+        }
+        _ => TEMPLATE_V2.to_string(),
+    };
+    Ok(tpl
         .replace("{IMG}", &img_wgsl(g))
         .replace("{SPACE}", blocks.space_part(g)?.map_or(NO_SPACE, |b| &b.wgsl))
         .replace("{MOTION}", &m.wgsl)
@@ -424,35 +462,47 @@ pub fn wgsl(g: &Genome, blocks: &Blocks) -> Result<String> {
 
 /// Layer pass source (None when the genome has no layer blocks).
 pub fn layers_wgsl(g: &Genome, blocks: &Blocks) -> Result<Option<String>> {
-    if !g.has_layers() {
+    if !g.has_layers() && g.comp.is_empty() {
         return Ok(None);
     }
     let [bd, ov] = blocks.layer_parts(g)?;
     let fb = g.feedback.unwrap_or(1.0).clamp(0.0, 1.5);
-    Ok(Some(
-        LAYERS
-            .replace("{IMG}", &img_wgsl(g))
-            .replace("{FONT}", &crate::font::wgsl(&g.text))
-            .replace("{BACKDROP}", bd.map_or(NO_BACKDROP, |b| &b.wgsl))
-            .replace("{OVERLAY}", ov.map_or(NO_OVERLAY, |b| &b.wgsl))
-            .replace("{FEEDBACK}", &format!("{fb:?}")),
-    ))
+    let src = LAYERS
+        .replace("{IMG}", &img_wgsl(g))
+        .replace("{FONT}", &crate::font::wgsl(&g.text))
+        .replace("{BACKDROP}", bd.map_or(NO_BACKDROP, |b| &b.wgsl))
+        .replace("{OVERLAY}", ov.map_or(NO_OVERLAY, |b| &b.wgsl))
+        .replace("{FEEDBACK}", &format!("{fb:?}"));
+    // Engine 2: a comp block reframes the feedback for display only (this pass is never fed back). Without one
+    // the source is byte-for-byte the old one.
+    Ok(Some(match blocks.comp_part(g)? {
+        Some(c) => src.replace("backdrop(p) + prev(uv) * ", "backdrop(p) + comp(uv) * ") + "\n" + &c.wgsl,
+        None => src,
+    }))
 }
 
-/// In-memory Scene for a genome: 8 param slots, 14 with layers, 16 with a space block (each block's params padded to its slot count)
+/// In-memory Scene for a genome: 8 param slots, 14 with layers or a dual emitter, 16 with a space block (each block's params padded to its slot count)
 /// and the genome's palette. `wgsl_path` = <gen_dir>/<id>.wgsl (written by `write`).
 /// A tuned value (`g.params`) narrows its range to value ± 15% of the width (fixed: exactly value).
 pub fn to_scene(g: &Genome, blocks: &Blocks, gen_dir: &Path) -> Result<Scene> {
     let pad = ParamRange { name: String::new(), min: 0.0, max: 0.0, fixed: true };
     let [m, e, c] = blocks.parts(g)?;
     let [bd, ov] = blocks.layer_parts(g)?;
+    let eb = blocks.emitter_b_part(g)?;
+    if eb.is_some() && g.has_layers() {
+        bail!("{}: a dual-emitter look can't have a backdrop or overlay (they share param slots)", g.id());
+    }
     let mut slots = vec![(Some(m), SLOTS[0]), (Some(e), SLOTS[1]), (Some(c), SLOTS[2])];
     if g.has_layers() {
         slots.extend([(bd, SLOTS[3]), (ov, SLOTS[4])]);
     }
-    // Space params live in slots 14..15 (after the layers' 8..13, padded when there are none).
+    // A dual look's second emitter takes slots 8..10 (EP2), padded to 14.
+    if let Some(eb) = eb {
+        slots.extend([(Some(eb), SLOTS[1]), (None, SLOTS[3] + SLOTS[4] - SLOTS[1])]);
+    }
+    // Space params live in slots 14..15 (padded when nothing fills 8..13).
     if let Some(sp) = blocks.space_part(g)? {
-        if !g.has_layers() {
+        if !g.has_layers() && eb.is_none() {
             slots.extend([(None, SLOTS[3]), (None, SLOTS[4])]);
         }
         slots.push((Some(sp), SLOTS[5]));
@@ -564,6 +614,10 @@ pub fn random(blocks: &Blocks, r: u64) -> Genome {
 /// Core --layers: gives a look a backdrop (one showing a picture only when there are plates), an overlay
 /// half the time (text overlays only when there is text), a plate and the text. `r` = 64-bit hash.
 pub fn dress(g: &Genome, blocks: &Blocks, r: u64, plates: usize, text: &str) -> Genome {
+    // A dual look's second emitter uses the layer slots.
+    if g.template == "dual" {
+        return g.clone();
+    }
     // ponytail: needs are sniffed from the block source; a toml flag if a block ever calls them indirectly.
     let backs: Vec<&Block> = blocks.backdrop.iter().filter(|b| plates > 0 || !b.wgsl.contains("img(")).collect();
     let overs: Vec<&Block> = blocks.overlay.iter().filter(|b| !text.is_empty() || !b.wgsl.contains("text_px(")).collect();
@@ -601,7 +655,8 @@ fn pick_blend(h: u64) -> String {
 }
 
 /// Engine-2 random genome: `random`'s blocks plus a space fold (none a sixth of the time), a blend mode
-/// (add half the time), a cosine palette half the time, and the segment's `regime` with its finishing look
+/// (add half the time), a cosine palette half the time, a recipe (stateless or dual a sixth of the time
+/// each), a comp framing a third of the time, and the segment's `regime` with its finishing look
 /// (mono tints with palette colour 2). `r` = 64-bit hash.
 pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
@@ -612,6 +667,20 @@ pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Gen
     g.blend = pick_blend(h(3));
     if h(4) % 2 == 0 {
         g.palette = cosine_palette(h(5));
+    }
+    // Recipe: stateless a sixth of the time, dual (a second, different emitter) a sixth, else feedback.
+    match h(6) % 6 {
+        0 => g.template = "stateless".into(),
+        1 if blocks.emitter.len() > 1 => {
+            let others: Vec<&Block> = blocks.emitter.iter().filter(|b| b.id != g.emitter).collect();
+            g.template = "dual".into();
+            g.emitter_b = others[(h(7) % others.len() as u64) as usize].id.clone();
+        }
+        _ => {}
+    }
+    // A display-only comp framing a third of the time.
+    if !blocks.comp.is_empty() && h(8) % 3 == 0 {
+        g.comp = nth_id(&blocks.comp, h(9) as usize);
     }
     g.regime = regime.name.into();
     g.post = regime.post;
@@ -882,5 +951,47 @@ mod tests {
             kinds.insert(changed.iter().position(|&c| c).unwrap());
         }
         assert_eq!(kinds.len(), 3, "fold, comp and palette changes all occur");
+    }
+
+    fn comp_block(id: &str, wgsl: &str) -> Block {
+        Block { id: id.into(), params: vec![], wgsl: wgsl.into(), toml: String::new() }
+    }
+
+    #[test]
+    fn recipes_comp_and_dual_slots() {
+        let mut b = blocks().pinned(1);
+        b.add("space", space_block("space_test", "fn space(p: vec2<f32>) -> vec2<f32> { return p; }")).unwrap();
+        b.add("comp", comp_block("comp_test", "fn comp(uv: vec2<f32>) -> vec3<f32> { return prev(uv.yx); }")).unwrap();
+        let base = Genome { regime: "calm".into(), space: "space_test".into(), ..genome() };
+        let st = wgsl(&Genome { template: "stateless".into(), ..base.clone() }, &b).unwrap();
+        assert!(st.contains("fn space") && !st.contains("prev(motion("), "stateless draws no feedback");
+        let eb = b.emitter.iter().find(|x| x.id != base.emitter && !x.params.is_empty()).unwrap();
+        let dual = Genome { template: "dual".into(), emitter_b: eb.id.clone(), ..base.clone() };
+        let src = wgsl(&dual, &b).unwrap();
+        assert!(src.contains("fn emit_b(") && src.contains("fn EP2(") && src.contains("emit_b(p)"));
+        let sc = to_scene(&dual, &b, Path::new(".")).unwrap();
+        assert_eq!(sc.params.len(), 16);
+        assert_eq!((sc.params[8].min, sc.params[8].max), (eb.params[0].min, eb.params[0].max), "emitter B in slots 8..10");
+        assert!(to_scene(&Genome { backdrop: "back_sky".into(), ..dual.clone() }, &b, Path::new(".")).is_err(), "dual has no layer slots");
+        assert_eq!(dress(&dual, &b, 3, 1, "HI"), dual, "dual looks are never dressed");
+        // Comp: a layer pass of its own (none without comp or layers), reframing the feedback only.
+        assert!(layers_wgsl(&base, &b).unwrap().is_none());
+        let l = layers_wgsl(&Genome { comp: "comp_test".into(), ..base.clone() }, &b).unwrap().unwrap();
+        assert!(l.contains("comp(uv) * 1.0") && l.contains("prev(uv.yx)"));
+        assert_eq!(wgsl(&base, &b).unwrap(), wgsl(&Genome { comp: "comp_test".into(), ..base.clone() }, &b).unwrap(), "comp never touches the feedback");
+    }
+
+    #[test]
+    fn random_v2_picks_recipes_and_comps() {
+        let mut b = blocks().pinned(1);
+        for k in 0..2 {
+            b.add("comp", comp_block(&format!("comp_t{k}"), "")).unwrap();
+        }
+        let reg = &crate::regime::REGIMES[0];
+        let gs: Vec<Genome> = (0..96).map(|r| random_v2(&b, crate::types::hash(11, r), reg)).collect();
+        let distinct = |f: &dyn Fn(&Genome) -> String| gs.iter().map(f).collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(distinct(&|g| g.template.clone()), 3, "feedback + stateless + dual");
+        assert_eq!(distinct(&|g| g.comp.clone()), 3, "none + 2 comps");
+        assert!(gs.iter().all(|g| (g.template == "dual") == !g.emitter_b.is_empty() && g.emitter_b != g.emitter));
     }
 }
