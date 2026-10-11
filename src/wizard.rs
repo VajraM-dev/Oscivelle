@@ -125,57 +125,63 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
         }
     }
 
-    // The engine is asked later, so the recommendation follows the earlier answer's: Classic (engine 1)
-    // defaults to the mix, like `--generated` unset does.
-    let classic = d.engine == Some(1);
-    let rec = |yes: bool| if yes { " (recommended)" } else { "" };
-    let styles = vec![
-        format!("Freshly generated{}", rec(!classic)),
-        format!("Mix of hand-made and freshly generated{}", rec(classic)),
-        "Hand-made only".to_string(),
+    // Asked first: the engine (or the AI, which evolves engine-1 looks) decides what the later questions recommend.
+    let ai = llm::load();
+    let mut kinds = vec![
+        "Variety: a new world on each drop, looks that develop with the music, styled transitions (recommended)".to_string(),
+        "Classic: the original looks".to_string(),
     ];
+    match &ai {
+        Some(ai) => {
+            let paints = if ai.image_model.is_empty() { "" } else { ", more if it paints pictures" };
+            kinds.push(format!("AI-designed from your description (uses your AI credit: a few cents{paints})"));
+        }
+        None => println!("\x1b[2mTip: run \"visualiser --setup-ai\" to let AI design visuals from a description.\x1b[0m"),
+    }
+    let cur = if d.vibe.is_some() && ai.is_some() { 2 } else { usize::from(d.engine == Some(1)) };
+    let kind = Select::new("What kind of visuals?", kinds).with_starting_cursor(cur).raw_prompt()?.index;
+    match kind {
+        2 => {
+            let t = Text::new("Describe the vibe in your own words:")
+                .with_initial_value(d.vibe.as_deref().unwrap_or(""))
+                .with_help_message("e.g. clouds and haze, molten gold, rainy neon city. New visuals are written when nothing fits.")
+                .with_validator(|s: &str| Ok(if s.trim().is_empty() { Validation::Invalid("type a few words, or Esc to quit".into()) } else { Validation::Valid }))
+                .prompt()?;
+            a.vibe = Some(t.trim().to_string());
+        }
+        k => a.engine = Some(if k == 1 { 1 } else { 2 }),
+    }
+    let variety = kind == 0;
+
+    // Variety shows are built from generated looks; Classic and AI looks mix with the hand-made scenes by default.
+    let rec = |yes: bool| if yes { " (recommended)" } else { "" };
+    let mut styles = vec![
+        format!("Freshly generated{}", rec(variety)),
+        format!("Mix of hand-made and freshly generated{}", rec(!variety)),
+    ];
+    // The AI only designs generated looks, so it has no hand-made-only option.
+    if a.vibe.is_none() {
+        styles.push("Hand-made only (the built-in scenes)".to_string());
+    }
     let cur = match d.generated {
-        Some(g) if g == 0.0 => 2,
+        Some(g) if g == 0.0 => styles.len() - 1,
         Some(g) if g < 1.0 => 1,
         Some(_) => 0,
-        None => usize::from(classic),
+        None => usize::from(!variety),
     };
-    a.generated = Some(match Select::new("Visual style?", styles).with_starting_cursor(cur).raw_prompt()?.index {
+    a.generated = Some(match Select::new("Scenes?", styles).with_starting_cursor(cur).raw_prompt()?.index {
         1 => 0.5,
         2 => 0.0,
         _ => 1.0,
     });
-    // Hand-made scenes are fixed: motion graphics, AI and pictures only apply to generated ones.
+    // Hand-made scenes are fixed: motion graphics and pictures only apply to generated ones.
     if a.generated != Some(0.0) {
-        a.layers = Confirm::new("Add motion graphics (backdrops, HUD, text, a new shot at each drop)?")
+        // Variety cuts to a new world on every drop anyway; elsewhere that comes with the motion graphics.
+        let drops = if variety { "" } else { ", a new shot at each drop" };
+        a.layers = Confirm::new(&format!("Add motion graphics (backdrops, HUD, text{drops})?"))
             .with_help_message("Yes = scenery behind the visuals (sky, 3D sea world, your pictures) + HUD/text on top. No = abstract visuals only.")
             .with_default(d.layers)
             .prompt()?;
-
-        if let Some(ai) = llm::load() {
-            let paints = if ai.image_model.is_empty() { "" } else { ", more if it paints pictures" };
-            let who = vec![
-                "Core engine only (free, works offline)".to_string(),
-                format!("Let AI design it from a description (uses your AI credit: a few cents{paints})"),
-            ];
-            if Select::new("Who designs the visuals?", who).with_starting_cursor(usize::from(d.vibe.is_some())).raw_prompt()?.index == 1 {
-                let t = Text::new("Describe the vibe in your own words:")
-                    .with_initial_value(d.vibe.as_deref().unwrap_or(""))
-                    .with_help_message("e.g. clouds and haze, molten gold, rainy neon city. New visuals are written when nothing fits.")
-                    .with_validator(|s: &str| Ok(if s.trim().is_empty() { Validation::Invalid("type a few words, or Esc to quit".into()) } else { Validation::Valid }))
-                    .prompt()?;
-                a.vibe = Some(t.trim().to_string());
-            }
-        } else {
-            println!("\x1b[2mTip: run \"visualiser --setup-ai\" to let AI design visuals from a description.\x1b[0m");
-        }
-
-        // The vibe evolves engine-1 looks, so the engine is only asked on the core path.
-        if a.vibe.is_none() {
-            let engines = vec!["Variety — new folds, moods, fractals, glitch (recommended)", "Classic — the original looks"];
-            let i = Select::new("Visuals?", engines).with_starting_cursor(usize::from(d.engine == Some(1))).raw_prompt()?.index;
-            a.engine = Some(if i == 1 { 1 } else { 2 });
-        }
 
         if (a.layers || a.vibe.is_some())
             && Confirm::new("Show your own pictures in the video?")
