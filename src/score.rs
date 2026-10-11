@@ -134,6 +134,14 @@ impl Judge {
         Ok(())
     }
 
+    /// `audition` with the layer pass drawn: for new backdrop/overlay blocks, which normal judging never draws.
+    pub fn audition_layered(&mut self, scene: Scene, analysis: &Analysis) -> Result<()> {
+        self.engine.layers = true;
+        let r = self.audition(scene, analysis);
+        self.engine.layers = false;
+        r
+    }
+
     fn score(&mut self, scene: Scene, analysis: &Analysis, t0: f64, secs: f64) -> Result<Option<f32>> {
         let id = scene.id.clone();
         let mid: Vec<f32> = scene.params.iter().map(|p| (p.min + p.max) / 2.0).collect();

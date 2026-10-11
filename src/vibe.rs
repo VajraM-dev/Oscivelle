@@ -7,7 +7,7 @@
 use crate::genome::{self, Block, Blocks, Genome};
 use crate::llm::{self, AiConfig};
 use crate::score::Judge;
-use crate::types::{fnv1a, hms, Analysis, Post, Shot, Transition, TransitionKind};
+use crate::types::{fnv1a, hms, Analysis, Post, Shot, Transition, TransitionKind, MORPH_LEN};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -69,21 +69,29 @@ sprite = true for one object on a transparent background (floating cut-outs, bac
     s
 }
 
-/// Candidate shot moments: the start, each drop's build-up and drop, then phrase starts (time, label).
+/// Candidate shot moments, sorted, at most 60: the start and each drop's build-up and drop, then phrase
+/// starts spread evenly over the song to fill the rest (time, label).
 fn moments(a: &Analysis) -> Vec<(f64, String)> {
+    const MAX: usize = 60;
     let c = &a.curves;
-    let at = |t: f64, v: &[f32]| v.get(((t * c.rate) as usize).min(v.len().saturating_sub(1))).copied().unwrap_or(0.0);
+    let at = |t: f64, v: &[f32]| crate::director::sample(v, c.rate, t);
     let mut m: Vec<(f64, &str)> = vec![(0.0, "start")];
     for d in &a.drops {
         m.push((d.build_start, "build-up starts"));
         m.push((d.time, "DROP"));
     }
-    m.extend(a.phrases.iter().filter(|p| p.time > 1.0).map(|p| (p.time, "phrase")));
-    // Stable sort, then drop near-duplicates keeping the first: a drop wins over a phrase at the same time.
+    // Stable sort, then drop near-duplicates keeping the first.
     m.sort_by(|x, y| x.0.total_cmp(&y.0));
     m.dedup_by(|x, y| (x.0 - y.0).abs() < 1.0);
+    // A drop wins over a phrase at the same time.
+    let mut p: Vec<f64> = a.phrases.iter().map(|p| p.time).filter(|&t| t > 1.0 && m.iter().all(|x| (x.0 - t).abs() >= 1.0)).collect();
+    p.sort_by(f64::total_cmp);
+    p.dedup_by(|x, y| (*x - *y).abs() < 1.0);
+    let room = MAX.saturating_sub(m.len()).min(p.len());
+    m.extend((0..room).map(|i| (p[i * p.len() / room], "phrase")));
+    m.sort_by(|x, y| x.0.total_cmp(&y.0));
+    m.truncate(MAX);
     m.into_iter()
-        .take(60)
         .map(|(t, k)| (t, format!("{} {k}, energy {:.2}, tension {:.2}", hms(t as u64, false), at(t, &c.energy), at(t, &c.tension))))
         .collect()
 }
@@ -95,7 +103,8 @@ fn moments(a: &Analysis) -> Vec<(f64, String)> {
 pub fn run(c: &AiConfig, judge: &mut Judge, blocks_dir: &Path, gen_dir: &Path, blocks: &Blocks, a: &Analysis, vibe: &str, images: &[PathBuf], cache: &Path) -> Result<Design> {
     if let Some(hit) = std::fs::read_to_string(cache).ok().and_then(|s| serde_json::from_str::<Cache>(&s).ok()).filter(|h| h.vibe == vibe && h.images == images) {
         let g = &hit.design.genomes;
-        if !g.is_empty() && keep(g.clone(), blocks, hit.design.plates.len()) == *g {
+        // A deleted picture means a miss: the looks would silently lose it.
+        if !g.is_empty() && keep(g.clone(), blocks, hit.design.plates.len()) == *g && hit.design.plates.iter().all(|p| p.exists()) {
             eprintln!("vibe: {}", hit.note);
             return Ok(hit.design);
         }
@@ -169,7 +178,9 @@ pub fn run(c: &AiConfig, judge: &mut Judge, blocks_dir: &Path, gen_dir: &Path, b
     // Indexed as the AI numbered them (shots refer to these); None = unparseable.
     let raw: Vec<Option<Genome>> = d["looks"].as_array().into_iter().flatten().take(6).map(look).collect();
     let req = d["plates"].as_array().map_or(&[][..], |v| &v[..v.len().min(room)]);
-    let painted = paint(c, req, &cache.with_file_name("plates"));
+    // Only pictures a parsed look shows are painted (they cost money).
+    let used: Vec<bool> = (0..req.len()).map(|i| raw.iter().flatten().any(|g| g.plate == Some((images.len() + i) as u32))).collect();
+    let painted = paint(c, req, &used, &cache.with_file_name("plates"));
     // The AI's plate numbering -> the plan's (failed pictures drop out).
     let mut plates: Vec<PathBuf> = images.to_vec();
     let mut remap: Vec<Option<u32>> = (0..images.len() as u32).map(Some).collect();
@@ -243,7 +254,7 @@ pub fn run(c: &AiConfig, judge: &mut Judge, blocks_dir: &Path, gen_dir: &Path, b
                 "morph" => TransitionKind::Morph,
                 _ => TransitionKind::Cut,
             };
-            let duration = if kind == TransitionKind::Morph { 4.0 } else { 0.0 };
+            let duration = if kind == TransitionKind::Morph { MORPH_LEN } else { 0.0 };
             Some((Shot { time, transition: Transition { kind, duration } }, look))
         })
         .collect();
@@ -254,25 +265,35 @@ pub fn run(c: &AiConfig, judge: &mut Judge, blocks_dir: &Path, gen_dir: &Path, b
     Ok(design)
 }
 
-/// Paints (or reuses, cached by prompt) the requested pictures; None where painting failed.
-fn paint(c: &AiConfig, req: &[Value], dir: &Path) -> Vec<Option<PathBuf>> {
-    req.iter()
-        .map(|p| {
-            let prompt = p["prompt"].as_str().unwrap_or_default();
-            let sprite = p["sprite"].as_bool().unwrap_or(false);
-            let path = dir.join(format!("{:016x}.png", fnv1a(format!("{sprite} {prompt}").as_bytes())));
-            if path.exists() {
-                return Some(path);
-            }
-            eprintln!("vibe: painting {} ...", if sprite { "a cut-out" } else { "a picture" });
-            let made = llm::image(c, prompt, sprite).and_then(|png| {
-                std::fs::create_dir_all(dir)?;
-                std::fs::write(&path, png)?;
-                Ok(path)
-            });
-            made.map_err(|e| eprintln!("warning: vibe: picture failed ({e:#}); looks using it go without")).ok()
-        })
-        .collect()
+/// Paints (or reuses, cached by prompt) the `used` requested pictures, in parallel; None where unused,
+/// blank or painting failed.
+fn paint(c: &AiConfig, req: &[Value], used: &[bool], dir: &Path) -> Vec<Option<PathBuf>> {
+    std::thread::scope(|s| {
+        let jobs: Vec<_> = req
+            .iter()
+            .zip(used)
+            .map(|(p, &used)| {
+                let prompt = p["prompt"].as_str().unwrap_or_default();
+                let sprite = p["sprite"].as_bool().unwrap_or(false);
+                (used && !prompt.trim().is_empty()).then(|| {
+                    s.spawn(move || {
+                        let path = dir.join(format!("{:016x}.png", fnv1a(format!("{sprite} {prompt}").as_bytes())));
+                        if path.exists() {
+                            return Some(path);
+                        }
+                        eprintln!("vibe: painting {} ...", if sprite { "a cut-out" } else { "a picture" });
+                        let made = llm::image(c, prompt, sprite).and_then(|png| {
+                            std::fs::create_dir_all(dir)?;
+                            std::fs::write(&path, png)?;
+                            Ok(path)
+                        });
+                        made.map_err(|e| eprintln!("warning: vibe: picture failed ({e:#}); looks using it go without")).ok()
+                    })
+                })
+            })
+            .collect();
+        jobs.into_iter().map(|j| j.and_then(|j| j.join().ok().flatten())).collect()
+    })
 }
 
 /// Has the AI write one block: up to 3 attempts, compile/judge errors fed back.
@@ -291,8 +312,9 @@ fn write_block(
     prelude: &str,
     contract: &str,
 ) -> Result<Block> {
-    // The fullest block of the kind teaches the most (back_sea for backdrops).
-    let ex = all.list(kind)?.iter().max_by_key(|b| b.wgsl.len()).context("no example block")?;
+    // Layers: the fullest block teaches the most (back_sea for backdrops). Feedback kinds: the first.
+    let list = all.list(kind)?;
+    let ex = if matches!(kind, "backdrop" | "overlay") { list.iter().max_by_key(|b| b.wgsl.len()) } else { list.first() }.context("no example block")?;
     let system = format!(
         "You write {kind} blocks for a feedback-shader music visualiser (WGSL, wgpu).\n\n\
          The prelude below is prepended to every scene:\n```wgsl\n{prelude}\n```\n\n{contract}\n\n\
@@ -333,7 +355,13 @@ fn try_block(judge: &mut Judge, gen_dir: &Path, all: &Blocks, a: &Analysis, look
     if crate::scenes::palette(&g.palette).is_err() {
         g.palette = base.palette;
     }
-    judge.audition(genome::write(&g, &trial, gen_dir)?, a)?;
+    let scene = genome::write(&g, &trial, gen_dir)?;
+    // Normal judging skips the layer pass, so a new layer block is judged with it drawn.
+    if matches!(kind, "backdrop" | "overlay") {
+        judge.audition_layered(scene, a)?
+    } else {
+        judge.audition(scene, a)?
+    }
     Ok(b)
 }
 
@@ -435,5 +463,13 @@ mod tests {
         let ms = moments(&a);
         assert_eq!(ms.iter().map(|m| m.0).collect::<Vec<_>>(), [0.0, 40.0, 64.0]);
         assert!(ms[2].1.contains("DROP"), "a drop wins over a phrase at the same time");
+        // A long mix: a late drop survives the cap; phrases fill the rest, spread out, sorted.
+        a.duration = 4000.0;
+        a.phrases = (1..200).map(|i| crate::types::Phrase { time: i as f64 * 20.0, bars: 16 }).collect();
+        a.drops = vec![crate::types::Drop { time: 3990.0, build_start: 3970.0, strength: 1.0 }];
+        let ms = moments(&a);
+        assert_eq!(ms.len(), 60);
+        assert!(ms.iter().any(|m| m.0 == 3990.0 && m.1.contains("DROP")));
+        assert!(ms.iter().filter(|m| m.0 > 2000.0).count() > 20 && ms.windows(2).all(|w| w[0].0 < w[1].0));
     }
 }

@@ -148,18 +148,18 @@ fn post(c: &AiConfig, body: &Value) -> Result<Value> {
 
 /// The image-generation URL of the same service (".../v1/images/generations").
 fn images_endpoint(c: &AiConfig) -> String {
-    let base = c.base_url.trim().trim_end_matches('/');
-    format!("{}/images/generations", base.strip_suffix("/chat/completions").unwrap_or(base))
+    let chat = endpoint(c);
+    format!("{}/images/generations", chat.strip_suffix("/chat/completions").unwrap_or(&chat))
 }
 
-/// One 1536x1024 picture from the image model (OpenAI gpt-image models); PNG bytes.
+/// One PLATE_W x PLATE_H picture from the image model (OpenAI gpt-image models); PNG bytes.
 /// `transparent`: a cut-out on a transparent background.
 pub fn image(c: &AiConfig, prompt: &str, transparent: bool) -> Result<Vec<u8>> {
     use base64::Engine as _;
     let body = json!({
         "model": c.image_model.trim(),
         "prompt": prompt,
-        "size": "1536x1024",
+        "size": format!("{}x{}", crate::types::PLATE_W, crate::types::PLATE_H),
         "quality": "medium",
         "background": if transparent { "transparent" } else { "opaque" },
         "output_format": "png",

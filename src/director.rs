@@ -112,7 +112,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                 // A detected track change within 2 bars tells us how the music actually changes here.
                 let transition = match a.track_changes.iter().find(|c| (c.time - t).abs() <= 2.0 * bar) {
                     Some(c) => change_transition(c),
-                    None => flash_near_drop(t, Transition { kind: TransitionKind::Morph, duration: 4.0 }),
+                    None => flash_near_drop(t, Transition { kind: TransitionKind::Morph, duration: MORPH_LEN }),
                 };
                 bounds.push(Boundary { start: t, title: m.name.clone(), scene: known(&m.scene), transition });
             }
@@ -304,7 +304,7 @@ fn pick(scenes: &[Scene], soft: &[&str], hard: &[&str], r: u64) -> String {
     unreachable!("scenes is non-empty")
 }
 
-fn bar_len(a: &Analysis) -> f64 {
+pub(crate) fn bar_len(a: &Analysis) -> f64 {
     240.0 / if a.bpm > 0.0 { a.bpm } else { 120.0 }
 }
 
@@ -517,7 +517,7 @@ fn smoothstep(x: f32) -> f32 {
 }
 
 /// Linear interpolation into a curve sampled at `rate` Hz.
-fn sample(v: &[f32], rate: f64, t: f64) -> f32 {
+pub(crate) fn sample(v: &[f32], rate: f64, t: f64) -> f32 {
     if v.is_empty() || rate <= 0.0 {
         return 0.0;
     }
@@ -704,7 +704,7 @@ mod tests {
         let a = test_analysis();
         let scenes = test_scenes();
         let flash = Transition { kind: TransitionKind::Flash, duration: 0.0 };
-        let morph = Transition { kind: TransitionKind::Morph, duration: 4.0 };
+        let morph = Transition { kind: TransitionKind::Morph, duration: MORPH_LEN };
         // 64 s is kept (a flash beats the earlier morph at 56 s); 70 s is within 8 bars of it and 2 s is
         // within 8 bars of the start: all three dropped.
         let shots = [

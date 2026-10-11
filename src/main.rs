@@ -232,9 +232,12 @@ fn run(cli: Cli) -> Result<()> {
         Some(v) if !reuse && generated > 0.0 && cli.keep.is_none() => vibe_seeds(&cli, v, &user_plates, &scenes, &scenes_dir, &gen_dir, &analysis, &data),
         _ => (None, vibe::Design::default()),
     };
-    let seeds = design.genomes.clone();
+    let vibe::Design { genomes: seeds, plates: vibe_plates, shots: story } = design;
     // The vibe's plate list (--image files, then its pictures) replaces the user's when it made one.
-    let plates = if design.plates.is_empty() { user_plates } else { design.plates.clone() };
+    let plates = if vibe_plates.is_empty() { user_plates } else { vibe_plates };
+    // A storyboard directs every segment, so none rolls a curated scene. Saved in the plan, so a plain re-run
+    // (generated taken from the plan) still reuses it; the vibe only runs when not reusing, so reuse never sees this.
+    let generated = if story.is_empty() { generated } else { 1.0 };
     // Blocks only when something is (or was) generated.
     let blocks = if generated > 0.0 || previous.as_ref().is_some_and(|p| p.segments.iter().any(|s| s.genome.is_some())) {
         Some(genome::Blocks::load(&scenes_dir.join("blocks"))?)
@@ -296,7 +299,7 @@ fn run(cli: Cli) -> Result<()> {
                     .iter()
                     .flat_map(|d| {
                         [
-                            Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: 4.0 } },
+                            Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: MORPH_LEN } },
                             Shot { time: d.time, transition: Transition { kind: TransitionKind::Flash, duration: 0.0 } },
                         ]
                     })
@@ -305,15 +308,17 @@ fn run(cli: Cli) -> Result<()> {
                 Vec::new()
             };
             // A storyboard picks each shot's look as designed (no evolution): the AI is directing.
-            let bar = 240.0 / if analysis.bpm > 0.0 { analysis.bpm } else { 120.0 };
+            // The shot nearest the segment start (the director snaps shots up to 2 bars and may drop some);
+            // else the last one before it.
+            let bar = director::bar_len(&analysis);
             let storyboard = |start: f64, _end: f64, _r: u64| {
                 blocks.as_ref()?;
-                let (_, look) = design.shots.iter().rev().find(|(s, _)| s.time <= start + 2.0 * bar).or(design.shots.first())?;
-                design.genomes.get(*look).cloned()
+                let near = story.iter().filter(|(s, _)| (s.time - start).abs() <= 2.0 * bar).min_by(|x, y| (x.0.time - start).abs().total_cmp(&(y.0.time - start).abs()));
+                let (_, look) = near.or_else(|| story.iter().rev().find(|(s, _)| s.time <= start)).or(story.first())?;
+                seeds.get(*look).cloned()
             };
-            let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if design.shots.is_empty() { &dressed } else { &storyboard };
-            let story: Vec<Shot> = design.shots.iter().map(|(s, _)| *s).collect();
-            let shots = if story.is_empty() { shots } else { story };
+            let gf: &dyn Fn(f64, f64, u64) -> Option<genome::Genome> = if story.is_empty() { &dressed } else { &storyboard };
+            let shots = if story.is_empty() { shots } else { story.iter().map(|(s, _)| *s).collect() };
             let mut plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,

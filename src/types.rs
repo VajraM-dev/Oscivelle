@@ -248,6 +248,8 @@ pub struct Variation {
 /// Plate (picture) size: every image is centre-cropped and fitted to this (3:2), RGBA8 sRGB.
 pub const PLATE_W: u32 = 1536;
 pub const PLATE_H: u32 = 1024;
+/// Length of a morph transition, seconds.
+pub const MORPH_LEN: f64 = 4.0;
 /// Scene param slots (SceneUniforms p0..p3). Hand-made scenes use ≤ 8 in practice; layered genomes 14.
 pub const MAX_PARAMS: usize = 16;
 
