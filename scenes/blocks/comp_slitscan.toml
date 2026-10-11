@@ -1,0 +1,2 @@
+kind = "comp"
+description = "Slit-scan (display only): each row (or column) shows the frame from a different moment up to 2 s back, so motion smears into rubbery time-stretches"

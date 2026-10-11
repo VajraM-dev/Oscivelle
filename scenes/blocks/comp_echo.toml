@@ -1,0 +1,2 @@
+kind = "comp"
+description = "Time echo (display only): the frame plus three fading, slightly larger, hue-shifted copies from 6, 12 and 18 frames ago; kicks brighten the echoes"
