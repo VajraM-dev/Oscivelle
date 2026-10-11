@@ -125,15 +125,20 @@ pub fn ask(prev: Option<&Answers>) -> Result<Answers> {
         }
     }
 
+    // The engine is asked later, so the recommendation follows the earlier answer's: Classic (engine 1)
+    // defaults to the mix, like `--generated` unset does.
+    let classic = d.engine == Some(1);
+    let rec = |yes: bool| if yes { " (recommended)" } else { "" };
     let styles = vec![
-        "Freshly generated (recommended)",
-        "Mix of hand-made and freshly generated",
-        "Hand-made only",
+        format!("Freshly generated{}", rec(!classic)),
+        format!("Mix of hand-made and freshly generated{}", rec(classic)),
+        "Hand-made only".to_string(),
     ];
     let cur = match d.generated {
         Some(g) if g == 0.0 => 2,
         Some(g) if g < 1.0 => 1,
-        _ => 0,
+        Some(_) => 0,
+        None => usize::from(classic),
     };
     a.generated = Some(match Select::new("Visual style?", styles).with_starting_cursor(cur).raw_prompt()?.index {
         1 => 0.5,

@@ -702,6 +702,10 @@ fn settle(g: &Genome, mut out: Genome, blocks: &Blocks) -> Genome {
     if out.palette != g.palette {
         retint(&mut out);
     }
+    // A dual look's two emitters must differ (same id = duplicate helper defs): keep the parent's.
+    if out.template == "dual" && out.emitter == out.emitter_b {
+        out.emitter = g.emitter.clone();
+    }
     out.prune(blocks);
     out
 }
@@ -1013,5 +1017,9 @@ mod tests {
         assert_eq!(distinct(&|g| g.template.clone()), 3, "feedback + stateless + dual");
         assert_eq!(distinct(&|g| g.comp.clone()), 3, "none + 2 comps");
         assert!(gs.iter().all(|g| (g.template == "dual") == !g.emitter_b.is_empty() && g.emitter_b != g.emitter));
+        // Mutation keeps a dual look's emitters distinct.
+        for d in gs.iter().filter(|g| g.template == "dual") {
+            assert!((0..64).all(|r| { let m = mutate_v2(d, &b, crate::types::hash(5, r)); m.emitter != m.emitter_b }));
+        }
     }
 }

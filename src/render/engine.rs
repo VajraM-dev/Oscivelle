@@ -340,13 +340,22 @@ impl Engine {
         e
     }
 
-    /// Clears the feedback (start of a chunk / restart).
+    /// Clears the feedback and the display history (start of a chunk / restart). A cleared ring reads as
+    /// a fresh one (zeroed), and the chunk pre-roll refills it as a continuous render would.
     pub fn reset(&self) {
         let mut enc = self.device.create_command_encoder(&Default::default());
         for v in [&self.fb[0], &self.fb[1], &self.accum] {
             begin(&mut enc, v, true);
         }
+        self.clear_hist(&mut enc);
         self.queue.submit([enc.finish()]);
+    }
+
+    /// Clears every history ring layer (when the ring is kept).
+    fn clear_hist(&self, enc: &mut wgpu::CommandEncoder) {
+        for v in self.hist.iter().flatten() {
+            begin(enc, v, true);
+        }
     }
 
     /// Ids of scenes compiled (or attempted) so far.
@@ -434,8 +443,9 @@ impl Engine {
         self.queue.write_buffer(&self.ubuf[0], 0, bytemuck::bytes_of(&fs.a));
         let mut enc = self.device.create_command_encoder(&Default::default());
         if fs.reset {
-            // A Reset cut: the new look starts from black.
+            // A Reset cut: the new look starts from black, with no history of the old one.
             drop(begin(&mut enc, &self.fb[cur], true));
+            self.clear_hist(&mut enc);
         }
         draw(&mut enc, &self.fb[next], true, pa, &self.scene_bg[0][cur], 1.0);
         if let Some((id_b, ub)) = &fs.b {
@@ -819,6 +829,8 @@ mod tests {
             e.finish(&mut enc, &out.create_view(&Default::default()), &fs, false, false);
             queue.submit([enc.finish()]);
         }
+        // Reset clears the history ring too.
+        e.reset();
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     }
 

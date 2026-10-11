@@ -67,12 +67,30 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     if req.scenes.is_empty() {
         bail!("no scenes");
     }
-    // --reroll counts the saved plan's segments; a phrase variant belongs to the segment it varies.
-    let reroll: Vec<usize> = match req.previous {
-        Some(p) if p.segments.iter().any(|s| s.variant) => {
-            req.reroll.iter().map(|&i| p.segments.iter().take(i + 1).filter(|s| !s.variant).count().saturating_sub(1)).collect()
+    // A phrase variant is part of the segment it varies: locking one locks that segment (which then keeps
+    // its saved variants, see the locked branch below).
+    let normal;
+    let previous = match req.previous {
+        Some(p) if p.segments.iter().any(|s| s.variant && s.locked) => {
+            let mut q = p.clone();
+            let mut parent = 0;
+            for i in 0..q.segments.len() {
+                if !q.segments[i].variant {
+                    parent = i;
+                } else if q.segments[i].locked {
+                    q.segments[i].locked = false;
+                    q.segments[parent].locked = true;
+                }
+            }
+            normal = q;
+            Some(&normal)
         }
-        _ => req.reroll.to_vec(),
+        p => p,
+    };
+    // --reroll counts the saved plan's segments; a phrase variant belongs to the segment it varies.
+    let reroll: Vec<usize> = match previous {
+        Some(p) => req.reroll.iter().map(|&i| i.saturating_sub(p.segments.iter().take(i + 1).filter(|s| s.variant).count())).collect(),
+        None => req.reroll.to_vec(),
     };
     // Auto picks come from the shipped scenes only (unless --pool all); a library without them (tests) uses all.
     let builtin: Vec<Scene> = req.scenes.iter().filter(|s| crate::scenes::is_builtin(&s.id)).cloned().collect();
@@ -149,7 +167,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
 
     // Locked segments must survive small boundary shifts (re-analysis, marker edits): pull the nearest
     // boundary within 2 bars onto each locked start, or insert one there.
-    if let Some(p) = req.previous {
+    if let Some(p) = previous {
         let locks: Vec<f64> = p
             .segments
             .iter()
@@ -194,9 +212,9 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
     // (only when the plan seed and mode are unchanged) so earlier re-rolls stick.
     let prev: Vec<Option<&Segment>> = bounds
         .iter()
-        .map(|b| req.previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
+        .map(|b| previous.and_then(|p| p.segments.iter().find(|s| (s.start - b.start).abs() <= 0.05)))
         .collect();
-    let same_plan = req.previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine, req.pool));
+    let same_plan = previous.is_some_and(|p| p.same_inputs(req.seed, req.mode, req.generated, req.vibe, req.engine, req.pool));
     let locked = |i: usize| prev[i].filter(|s| s.locked);
     let kept = |i: usize| prev[i].filter(|_| same_plan);
     // Source name mixed in so different files get different takes at the same seed.
@@ -240,7 +258,14 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
                 Some(f) => (req.scenes.iter().find(|sc| sc.id == f).map_or_else(Vec::new, |sc| mods(sc, s.seed, req.engine)), None),
                 None => (s.mods.clone(), s.genome.clone()),
             };
-            segments.push(Segment { end: ends[i], scene, mods, genome, ..s.clone() });
+            // Its saved phrase variants follow it (unless a scene is forced), clipped to its new end.
+            let vars: Vec<Segment> = match (previous, req.force_scene) {
+                (Some(p), None) => p.segments.iter().skip_while(|x| !std::ptr::eq(*x, s)).skip(1).take_while(|x| x.variant && x.start < ends[i]).cloned().collect(),
+                _ => Vec::new(),
+            };
+            segments.push(Segment { end: vars.first().map_or(ends[i], |v| v.start), scene, mods, genome, ..s.clone() });
+            let k = vars.len();
+            segments.extend(vars.into_iter().enumerate().map(|(j, v)| Segment { end: if j + 1 == k { ends[i] } else { v.end }, ..v }));
             continue;
         }
         let rerolls = reroll.iter().filter(|&&r| r == i).count() as u64;
@@ -336,12 +361,19 @@ const PHRASE_CUTS: [TransitionKind; 5] = [TransitionKind::Cut, TransitionKind::W
 /// before it (genome::vary: another fold, comp framing or palette). Locked segments are left alone.
 fn phrase_variants(a: &Analysis, segs: Vec<Segment>, blocks: &Blocks, gen_dir: &std::path::Path, single: bool, engine: u32) -> Result<Vec<Segment>> {
     let bar = bar_len(a);
+    // Variants pick space folds and comp framings from the frozen library only (seeds stay reproducible
+    // whatever else is in the blocks folder); the full library still builds them.
+    let pinned = blocks.pinned(engine);
     let mut out = Vec::with_capacity(segs.len());
     for mut s in segs {
-        let Some(mut g) = s.genome.clone().filter(|_| !s.locked) else {
+        // Engine-1 looks (a vibe's) never become engine-2 ones; locked segments and kept variants stay as saved.
+        let Some(mut g) = s.genome.clone().filter(|g| g.is_v2() && !s.locked && !s.variant) else {
             out.push(s);
             continue;
         };
+        let mut pool = blocks.clone();
+        pool.space.retain(|b| b.id == g.space || pinned.space.iter().any(|p| p.id == b.id));
+        pool.comp.retain(|b| b.id == g.comp || pinned.comp.iter().any(|p| p.id == b.id));
         let cuts: Vec<f64> = a
             .phrases
             .iter()
@@ -352,7 +384,7 @@ fn phrase_variants(a: &Analysis, segs: Vec<Segment>, blocks: &Blocks, gen_dir: &
         let mut pieces = Vec::with_capacity(cuts.len());
         for (k, &t) in cuts.iter().enumerate() {
             let seed = hash(s.seed, 0x7A00 + k as u64);
-            g = genome::vary(&g, blocks, seed);
+            g = genome::vary(&g, &pool, seed);
             let sc = genome::to_scene(&g, blocks, gen_dir)?;
             let end = cuts.get(k + 1).copied().unwrap_or(s.end);
             let kind = PHRASE_CUTS[(hash(seed, 9) % PHRASE_CUTS.len() as u64) as usize];
@@ -1060,11 +1092,12 @@ mod tests {
             colour: vec![block("c0")],
             backdrop: vec![],
             overlay: vec![],
-            space: vec![block("space_a"), block("space_b")],
+            // space_x is not in the frozen library: variants never pick it.
+            space: vec![block("space_kaleido"), block("space_mirror"), block("space_x")],
             comp: vec![],
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
-        let gen = |_, _, r| Some(genome::random(&blocks, r));
+        let gen = |_, _, r| Some(Genome { regime: "calm".into(), ..genome::random(&blocks, r) });
         let req = PlanRequest { analysis: &a, scenes: &scenes, mode: Mode::Single, markers: &[], seed: 7, previous: None, reroll: &[], force_scene: None, generated: 1.0, vibe: None, genome_for: Some(&gen), blocks: Some(&blocks), gen_dir: Path::new("."), shots: &[], engine: 2, pool: Pool::Builtin };
         let p = plan(&req).unwrap();
         assert!(p.segments.len() > 10, "{}", p.segments.len());
@@ -1080,7 +1113,21 @@ mod tests {
         // --reroll of a variant re-rolls the segment it belongs to.
         let p2 = plan(&PlanRequest { previous: Some(&p), reroll: &[3], ..req }).unwrap();
         assert_ne!(p2.segments[0].seed, p.segments[0].seed);
-        // Engine 1 never splits.
+        assert!(p.segments.iter().all(|s| s.genome.as_ref().unwrap().space != "space_x"));
+        // Engine 1 never splits, nor does an engine-1 look (a vibe's) in an engine-2 plan.
         assert_eq!(plan(&PlanRequest { engine: 1, ..req }).unwrap().segments.len(), 1);
+        let gen1 = |_, _, r| Some(genome::random(&blocks, r));
+        assert_eq!(plan(&PlanRequest { genome_for: Some(&gen1), ..req }).unwrap().segments.len(), 1);
+        // A locked generated segment keeps its variants (another seed would replan everything else);
+        // locking one of its variants locks it the same way.
+        let json = |p: &Plan| serde_json::to_string(&p.segments).unwrap();
+        for k in [0, 3] {
+            let mut locked = p.clone();
+            locked.segments[k].locked = true;
+            let p3 = plan(&PlanRequest { previous: Some(&locked), seed: 8, ..req }).unwrap();
+            let mut want = p.clone();
+            want.segments[0].locked = true;
+            assert_eq!(json(&p3), json(&want), "lock {k}");
+        }
     }
 }
