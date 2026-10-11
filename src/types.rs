@@ -166,7 +166,7 @@ pub struct Plan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post: Option<Post>,
     /// Made with --layers.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub layers: bool,
 }
 

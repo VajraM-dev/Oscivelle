@@ -75,7 +75,9 @@ impl App<'_> {
         let caps = surface.get_capabilities(&adapter);
         config.format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(config.format);
         surface.configure(&device, &config);
-        let engine = Engine::new(&device, &queue, self.scenes, self.scenes_dir, self.quality, config.width, config.height, config.format);
+        let mut engine = Engine::new(&device, &queue, self.scenes, self.scenes_dir, self.quality, config.width, config.height, config.format);
+        // ponytail: layer files aren't hot-reloaded; restart --dev after editing a back_/over_ block.
+        engine.set_plates(&crate::plates::load_all(&self.plan.plates));
 
         let mut sink = rodio::DeviceSinkBuilder::open_default_sink().map_err(|e| anyhow!("audio output: {e}"))?;
         sink.log_on_drop(false);
@@ -208,6 +210,7 @@ impl ApplicationHandler for App<'_> {
                     l.surface.configure(&l.device, &l.config);
                     // Sim/out textures and finish uniforms are sized at construction: rebuild (feedback restarts; sim_t kept).
                     l.engine = Engine::new(&l.device, &l.queue, self.scenes, self.scenes_dir, self.quality, size.width, size.height, l.config.format);
+                    l.engine.set_plates(&crate::plates::load_all(&self.plan.plates));
                     l.fs = None; // stale: carries the old sim size
                     l.dirty = false;
                 }

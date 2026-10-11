@@ -2,7 +2,7 @@
 //! prints the equivalent command → runs it. The answers become ordinary CLI args, so
 //! clap validates them exactly as if typed.
 use crate::{llm, markers};
-use crate::types::{Mode, Quality};
+use crate::types::{Look, Mode, Quality};
 use anyhow::{bail, Result};
 use clap::ValueEnum;
 use inquire::validator::Validation;
@@ -22,6 +22,8 @@ pub struct Answers {
     pub seed: Option<u64>,
     pub no_titles: bool,
     pub no_grain: bool,
+    pub layers: bool,
+    pub look: Option<Look>,
 }
 
 fn val<T: ValueEnum>(t: &T) -> String {
@@ -60,6 +62,12 @@ pub fn to_args(a: &Answers) -> Vec<String> {
     }
     if a.no_grain {
         v.push("--no-grain".into());
+    }
+    if a.layers {
+        v.push("--layers".into());
+    }
+    if let Some(l) = &a.look {
+        v.extend(["--look".into(), val(l)]);
     }
     v
 }
@@ -109,7 +117,16 @@ pub fn ask() -> Result<Answers> {
         } else {
             println!("\x1b[2mTip: run \"visualiser --setup-ai\" to describe visuals in words.\x1b[0m");
         }
+        a.layers = Confirm::new("Add motion graphics (backdrops, HUD, text, a new shot at each drop)?").with_default(false).prompt()?;
     }
+
+    let looks = vec!["Clean (recommended)", "VHS tape", "CRT screen", "Mono (green hologram)"];
+    a.look = match Select::new("Finishing look?", looks).raw_prompt()?.index {
+        1 => Some(Look::Vhs),
+        2 => Some(Look::Crt),
+        3 => Some(Look::Mono),
+        _ => None,
+    };
 
     let kinds = vec!["Full video", "Quick 30-second test (draft quality, fast)"];
     if Select::new("What do you want to make?", kinds).raw_prompt()?.index == 1 {
@@ -169,10 +186,12 @@ mod tests {
             preview: Some("1:30".into()),
             seed: Some(7),
             no_grain: true,
+            layers: true,
+            look: Some(Look::Vhs),
             ..Default::default()
         };
         let args = to_args(&a);
-        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain");
+        assert_eq!(command_line(&args), "visualiser \"C:/My Music/mix.flac\" --mode single --generated 1 --vibe \"dark and liquid\" --quality draft --preview 1:30 --seed 7 --no-grain --layers --look vhs");
         let cli = crate::Cli::try_parse_from(std::iter::once("visualiser".to_string()).chain(args)).unwrap();
         assert_eq!(cli.audio.as_deref(), Some(std::path::Path::new("C:/My Music/mix.flac")));
         assert_eq!(cli.mode, Some(Mode::Single));
@@ -181,5 +200,6 @@ mod tests {
         assert_eq!(cli.generated, Some(1.0));
         assert_eq!(cli.vibe.as_deref(), Some("dark and liquid"));
         assert!(cli.no_grain && !cli.no_titles);
+        assert!(cli.layers && cli.look == Some(Look::Vhs));
     }
 }

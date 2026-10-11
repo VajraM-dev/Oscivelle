@@ -6,6 +6,7 @@ mod font;
 mod genome;
 mod llm;
 mod markers;
+mod plates;
 mod preview;
 mod render;
 mod scenes;
@@ -89,6 +90,15 @@ struct Cli {
     /// Describe the visuals in your own words; the AI tunes, combines and, when needed, writes new shader blocks (needs an AI service: see --setup-ai).
     #[arg(long)]
     vibe: Option<String>,
+    /// Motion graphics on generated scenes: a backdrop (sky, raymarched sea world, your --image), sometimes a HUD/grid/text overlay, and a new shot at each drop.
+    #[arg(long)]
+    layers: bool,
+    /// A picture the looks can show (with --layers or --vibe); repeatable, up to 8.
+    #[arg(long)]
+    image: Vec<PathBuf>,
+    /// Finishing look for the whole video: clean, vhs, crt or mono.
+    #[arg(long, value_enum)]
+    look: Option<Look>,
     /// Set up an OpenAI-compatible AI service (URL, key, model) for the AI features.
     #[arg(long)]
     setup_ai: bool,
@@ -190,14 +200,20 @@ fn run(cli: Cli) -> Result<()> {
     let previous: Option<Plan> = std::fs::read_to_string(&plan_path).ok().and_then(|s| serde_json::from_str(&s).ok());
     // Unset = what the saved plan used (so a plain re-run reuses it), else 0.5.
     let generated = cli.generated.or(previous.as_ref().map(|p| p.generated)).unwrap_or(0.5);
-    // A vibe only steers generated scenes, so it implies some.
-    let generated = if cli.vibe.is_some() && generated == 0.0 { 1.0 } else { generated };
+    // A vibe or --layers only steers generated scenes, so they imply some.
+    let generated = if (cli.vibe.is_some() || cli.layers) && generated == 0.0 { 1.0 } else { generated };
+    let plates: Vec<PathBuf> = cli.image.iter().take(plates::MAX).cloned().collect();
+    if !plates.is_empty() && !cli.layers && cli.vibe.is_none() {
+        eprintln!("warning: --image is only shown with --layers or --vibe");
+    }
     let reuse = !cli.replan
         && !cli.reanalyse
         && cli.reroll.is_empty()
         && cli.markers.is_none()
         && cli.scene.is_none()
-        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()));
+        && previous.as_ref().is_some_and(|p| p.same_inputs(cli.seed, mode, generated, cli.vibe.as_deref()))
+        // ponytail: AI plates follow the user's (M2), so a prefix match keeps them.
+        && previous.as_ref().is_some_and(|p| p.layers == cli.layers && p.plates.starts_with(&plates));
     let gen_dir = data.join("gen");
     // The vibe runs before blocks load, so the blocks it writes are included. Its judge is reused by evolution.
     let (judge, seeds) = match &cli.vibe {
@@ -219,7 +235,7 @@ fn run(cli: Cli) -> Result<()> {
         eprintln!("kept as scenes/{id}");
         return Ok(());
     }
-    let plan = match previous {
+    let mut plan = match previous {
         Some(p) if reuse => {
             eprintln!("using saved plan {}", plan_path.display());
             p
@@ -249,7 +265,31 @@ fn run(cli: Cli) -> Result<()> {
                 let rotated: Vec<_> = seeds[i..].iter().chain(&seeds[..i]).cloned().collect();
                 evolve::best(&mut judge.borrow_mut(), sub.as_ref().unwrap_or(blocks), &gen_dir, &analysis, start, end, r, &rotated, budget)
             };
-            let plan = director::plan(&director::PlanRequest {
+            let text = audio.file_stem().map(|s| s.to_string_lossy().replace(['_', '-'], " ")).unwrap_or_default();
+            // --layers dresses the evolved look (unless it already has layers, e.g. from the vibe).
+            let dressed = |start: f64, end: f64, r: u64| {
+                let g = evolved(start, end, r)?;
+                match blocks.as_ref() {
+                    Some(b) if cli.layers && !g.has_layers() => Some(genome::dress(&g, b, hash(r, 7), plates.len(), &text)),
+                    _ => Some(g),
+                }
+            };
+            // --layers: a morph into each build-up and a flash on each drop.
+            let shots: Vec<Shot> = if cli.layers {
+                analysis
+                    .drops
+                    .iter()
+                    .flat_map(|d| {
+                        [
+                            Shot { time: d.build_start, transition: Transition { kind: TransitionKind::Morph, duration: 4.0 } },
+                            Shot { time: d.time, transition: Transition { kind: TransitionKind::Flash, duration: 0.0 } },
+                        ]
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut plan = director::plan(&director::PlanRequest {
                 analysis: &analysis,
                 scenes: &scenes,
                 mode,
@@ -260,11 +300,13 @@ fn run(cli: Cli) -> Result<()> {
                 force_scene: cli.scene.as_deref(),
                 generated,
                 vibe: cli.vibe.as_deref(),
-                genome_for: Some(&evolved),
+                genome_for: Some(&dressed),
                 blocks: blocks.as_ref(),
                 gen_dir: &gen_dir,
-                shots: &[],
+                shots: &shots,
             })?;
+            plan.plates = plates.clone();
+            plan.layers = cli.layers;
             // No judge (e.g. no GPU): the plan above already fell back to hand-made scenes.
             if let Some(Err(e)) = gen.into_inner() {
                 eprintln!("warning: can't generate scenes ({e:#}); using hand-made ones");
@@ -277,6 +319,8 @@ fn run(cli: Cli) -> Result<()> {
             plan
         }
     };
+    // A render setting like --no-grain: set on every run, never reused.
+    plan.post = cli.look.map(Look::post);
 
     // Generated scenes become ordinary scenes: write each genome's .wgsl once.
     for g in plan.segments.iter().filter_map(|s| s.genome.as_ref()) {
@@ -288,7 +332,12 @@ fn run(cli: Cli) -> Result<()> {
     // A new plan leaves losing candidates (and the old plan's scenes) in gen_dir: drop them.
     // Not for the throwaway --scene plan, which would delete the saved plan's scenes.
     if !reuse && cli.scene.is_none() {
-        let used: Vec<String> = plan.segments.iter().filter_map(|s| Some(format!("{}.wgsl", s.genome.as_ref()?.id()))).collect();
+        let used: Vec<String> = plan
+            .segments
+            .iter()
+            .filter_map(|s| s.genome.as_ref())
+            .flat_map(|g| [format!("{}.wgsl", g.id()), format!("{}.layers.wgsl", g.id())])
+            .collect();
         for e in std::fs::read_dir(&gen_dir).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if name.ends_with(".wgsl") && !used.contains(&name) {

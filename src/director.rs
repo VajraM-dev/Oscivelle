@@ -119,6 +119,18 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
         }
     }
 
+    // Shot changes inside the music (storyboard / --layers). Markers mode keeps the user's own cuts.
+    if req.mode != Mode::Markers {
+        for s in req.shots {
+            let t = snap(a, s.time, bar);
+            if t < 8.0 * bar || a.duration - t < 8.0 * bar || bounds.iter().any(|b| (b.start - t).abs() < 8.0 * bar) {
+                continue;
+            }
+            bounds.push(Boundary { start: t, title: None, scene: None, transition: s.transition });
+        }
+        bounds.sort_by(|x, y| x.start.total_cmp(&y.start));
+    }
+
     // Locked segments must survive small boundary shifts (re-analysis, marker edits): pull the nearest
     // boundary within 2 bars onto each locked start, or insert one there.
     if let Some(p) = req.previous {
@@ -686,6 +698,37 @@ mod tests {
             moved |= f.a.p0[1] != frame_state(&flat, &a, &scenes, t, 64, 64, Quality::Draft).a.p0[1];
         }
         assert!(moved);
+    }
+
+    #[test]
+    fn shots_split_a_single_segment() {
+        let a = test_analysis();
+        let scenes = test_scenes();
+        let flash = Transition { kind: TransitionKind::Flash, duration: 0.0 };
+        // 64 s is kept; 70 s is within 8 bars of it and 2 s is within 8 bars of the start: both dropped.
+        let shots = [Shot { time: 64.0, transition: flash }, Shot { time: 70.0, transition: flash }, Shot { time: 2.0, transition: flash }];
+        let req = PlanRequest {
+            analysis: &a,
+            scenes: &scenes,
+            mode: Mode::Single,
+            markers: &[],
+            seed: 7,
+            previous: None,
+            reroll: &[],
+            force_scene: None,
+            generated: 0.0,
+            vibe: None,
+            genome_for: None,
+            blocks: None,
+            gen_dir: Path::new("."),
+            shots: &shots,
+        };
+        let p = plan(&req).unwrap();
+        assert_eq!(p.segments.len(), 2);
+        assert_eq!(p.segments[1].start, 64.0);
+        assert_eq!(p.segments[1].transition_in.kind, TransitionKind::Flash);
+        // Markers mode ignores shots.
+        assert_eq!(plan(&PlanRequest { mode: Mode::Markers, ..req }).unwrap().segments.len(), 1);
     }
 
     #[test]
