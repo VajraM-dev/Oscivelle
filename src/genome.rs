@@ -562,13 +562,13 @@ fn pick_blend(h: u64) -> String {
     if h % 2 == 0 { String::new() } else { BLENDS[((h >> 8) % BLENDS.len() as u64) as usize].into() }
 }
 
-/// Engine-2 random genome: `random`'s blocks plus a space fold (none a third of the time), a blend mode
+/// Engine-2 random genome: `random`'s blocks plus a space fold (none a sixth of the time), a blend mode
 /// (add half the time), a cosine palette half the time, and the segment's `regime` with its finishing look
 /// (mono tints with palette colour 2). `r` = 64-bit hash.
 pub fn random_v2(blocks: &Blocks, r: u64, regime: &crate::regime::Regime) -> Genome {
     let h = |k: u64| crate::types::hash(r, k);
     let mut g = random(blocks, r);
-    if !blocks.space.is_empty() && h(1) % 3 != 0 {
+    if !blocks.space.is_empty() && h(1) % 6 != 0 {
         g.space = nth_id(&blocks.space, h(2) as usize);
     }
     g.blend = pick_blend(h(3));
