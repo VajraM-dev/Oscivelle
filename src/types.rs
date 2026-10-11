@@ -232,6 +232,9 @@ pub struct Segment {
     /// Set when the scene is generated: `scene` is then `genome.id()` and its .wgsl is rebuilt from this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genome: Option<crate::genome::Genome>,
+    /// Engine 2: a phrase variant of the segment before it (not a chapter; --reroll maps it to its parent).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub variant: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -261,7 +264,37 @@ pub enum TransitionKind {
     Cut,
     Flash,
     Morph,
+    /// Engine 2: a hard cut that clears the feedback (black, then the new look rebuilds).
+    Reset,
+    /// Engine-2 styled morphs (render/trans.wgsl): the incoming look arrives through a mask that grows over
+    /// the window: its brightest parts first, an iris zooming through the centre, a melt from the top, tiles
+    /// in random order.
+    Wipe,
+    Iris,
+    Melt,
+    Cells,
 }
+
+impl TransitionKind {
+    /// Blends two looks over `duration` (Morph and the styled morphs).
+    pub fn is_morph(self) -> bool {
+        matches!(self, Self::Morph | Self::Wipe | Self::Iris | Self::Melt | Self::Cells)
+    }
+
+    /// trans.wgsl style index (0 = Morph's constant crossfade, also every non-morph kind).
+    pub fn style(self) -> u32 {
+        match self {
+            Self::Wipe => 1,
+            Self::Iris => 2,
+            Self::Melt => 3,
+            Self::Cells => 4,
+            _ => 0,
+        }
+    }
+}
+
+/// Engine-2 morph styles the seed picks from (Morph = plain crossfade).
+pub const MORPHS: [TransitionKind; 5] = [TransitionKind::Morph, TransitionKind::Wipe, TransitionKind::Iris, TransitionKind::Melt, TransitionKind::Cells];
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Transition {
@@ -417,4 +450,8 @@ pub struct FrameState {
     pub saturation: f32,
     /// Finishing look (finish pass).
     pub post: Post,
+    /// Morph style (TransitionKind::style; 0 = constant crossfade).
+    pub wipe: u32,
+    /// Clear the feedback before this step (a Reset cut starts here).
+    pub reset: bool,
 }

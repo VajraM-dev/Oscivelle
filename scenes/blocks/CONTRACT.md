@@ -60,3 +60,24 @@ both the motion and the emitter see it, so trails and shapes inherit its symmetr
 - `hyper_fold(q, k, w) -> vec4` (|q|<1): Mobius-drift by w, fold into the {p,q} Poincare tiling k (0..3); returns (q, inversions, mirror-circle r; centre (sqrt(1+r^2), 0)).
 - Motion blocks may tap `prev()` a few times (≤ 5) to react to the image (edges, brightness); get the pixel
   size from `resolution()`.
+
+## Engine 2: comp blocks, history, recipes
+**Comp blocks** (kind `comp`, ids `comp_<name>`, **no params**) reframe the finished feedback for display
+only, in the look's layer pass: `rgb = backdrop(p) + comp(uv) * feedback`, then the overlay. Nothing in this
+pass is fed back, so the simulation underneath keeps its own shape.
+- comp: `fn comp(uv: vec2<f32>) -> vec3<f32>`: the colour to show at `uv`. Read the feedback with `prev(uv)`
+  (in this pass `prev()` is the finished feedback; comp is the one layer kind that may call it) or the
+  display history with `hist(uv, k)`.
+- `hist(uv, k)`: the feedback `k` output frames ago (0..63, about 2 s at 30 fps), HDR. It is black until
+  the ring has filled. The engine keeps the ring only for looks whose comp block calls `hist(`.
+- No params: vary with `seed()` (fixed per segment) and the music helpers.
+
+**Recipes** (`Genome::template`): `""` is the feedback template above. Two others exist:
+- `"stateless"`: `col = colour(emit(space(p))) * drive`, with no `prev()`; the motion block is unused.
+  It suits dense and raymarched emitters.
+- `"dual"`: a second emitter (`Genome::emitter_b`, ≠ `emitter`). The brighter of the two wins each pixel.
+  The second is shown half a hue turn away and swells on snares.
+  - Its source is included with `fn emit(` renamed to `fn emit_b(` and `EP(` to `EP2(`, which reads params
+    `P(8..10)`. So emitters must define `emit` once, never call it themselves, and read params only
+    through `EP(`.
+  - Dual looks never get a backdrop or overlay, because they use those slots.

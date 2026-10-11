@@ -29,6 +29,18 @@ pub fn get(name: &str) -> Option<&'static Regime> {
     REGIMES.iter().find(|r| r.name == name)
 }
 
+/// The judge's ranges for a regime and recipe (genome::TEMPLATES): stateless looks redraw every frame, so
+/// they move more and carry more fine detail than trails; dual looks stack two emitters and clip a bit more.
+// ponytail: hand-set factors; retune from the gate's smoke renders if a recipe never (or always) passes.
+pub fn gate(r: &Regime, template: &str) -> Thresholds {
+    let th = r.th;
+    match template {
+        "stateless" => Thresholds { motion: (th.motion.0, th.motion.1 * 1.5), max_grain: th.max_grain * 1.5, ..th },
+        "dual" => Thresholds { max_clipped: th.max_clipped * 1.3, ..th },
+        _ => th,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +53,14 @@ mod tests {
             assert!((0.5..=1.5).contains(&r.decay) && (0.3..=2.0).contains(&r.drive), "{}", r.name);
         }
         assert!(get("mono").is_some() && get("nope").is_none());
+    }
+
+    #[test]
+    fn recipes_widen_the_regime_gate() {
+        let r = get("calm").unwrap();
+        assert_eq!(gate(r, "").motion, r.th.motion);
+        let s = gate(r, "stateless");
+        assert!(s.motion.1 > r.th.motion.1 && s.max_grain > r.th.max_grain && s.mean == r.th.mean);
+        assert!(gate(r, "dual").max_clipped > r.th.max_clipped);
     }
 }

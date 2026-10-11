@@ -233,6 +233,7 @@ impl Judge {
                 variations: vec![Variation { time: 0.0, params: mid, hue_shift: 0.0 }],
                 mods: vec![],
                 genome: None,
+                variant: false,
             }],
         };
         let (sw, sh) = self.engine.sim;

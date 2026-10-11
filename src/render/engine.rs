@@ -576,7 +576,7 @@ mod tests {
             u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 0.0, 1.0 / SIM_HZ as f32];
             u.beat[0] = 1.0;
             u.pal = [[1.0, 0.5, 0.2, 1.0]; 4];
-            let fs = FrameState { scene_a: "ok".into(), a: u, b: Some(("ok".into(), u)), mix: 0.5, flash: 0.2, exposure: 1.0, saturation: 1.0, post: Post::default() };
+            let fs = FrameState { scene_a: "ok".into(), a: u, b: Some(("ok".into(), u)), mix: 0.5, flash: 0.2, exposure: 1.0, saturation: 1.0, post: Post::default(), wipe: 0, reset: false };
             for i in 0..4 {
                 e.step(&fs, Some(1.0 / (i % 2 + 1) as f32)).unwrap();
             }
@@ -656,7 +656,7 @@ mod tests {
         let mut u = SceneUniforms::default();
         u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
         let post = Post { vhs: 1.0, scanlines: 1.0, posterize: 1.0, tint_amount: 1.0, tint: [0.0, 1.0, 0.0], strobe: 1.0, rgb_split: 1.0, tear: 1.0, invert: 1.0 };
-        let fs = FrameState { scene_a: lay[0].id.clone(), a: u, b: Some((lay[lay.len() - 1].id.clone(), u)), mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post };
+        let fs = FrameState { scene_a: lay[0].id.clone(), a: u, b: Some((lay[lay.len() - 1].id.clone(), u)), mix: 0.5, flash: 0.0, exposure: 1.0, saturation: 1.0, post, wipe: 0, reset: false };
         e.step(&fs, Some(1.0)).unwrap();
         let out = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -698,7 +698,7 @@ mod tests {
             let mut u = SceneUniforms::default();
             u.res_time = [e.sim.0 as f32, e.sim.1 as f32, 1.0, 1.0 / SIM_HZ as f32];
             u.p0 = [1.0; 4];
-            let fs = FrameState { scene_a: s.id.clone(), a: u, b: None, mix: 0.0, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default() };
+            let fs = FrameState { scene_a: s.id.clone(), a: u, b: None, mix: 0.0, flash: 0.0, exposure: 1.0, saturation: 1.0, post: Post::default(), wipe: 0, reset: false };
             e.step(&fs, Some(1.0)).unwrap();
         }
         assert_eq!(b2.space.len(), 6, "all space blocks present");

@@ -287,6 +287,7 @@ pub fn plan(req: &PlanRequest) -> Result<Plan> {
             transition_in: if i == 0 { CUT } else { b.transition },
             mods: mods(sc, seed, req.engine),
             genome,
+            variant: false,
         });
     }
     // A morph window (centred on the start) may not exceed either neighbouring segment, so windows never overlap.
@@ -544,6 +545,8 @@ pub fn frame_state(plan: &Plan, analysis: &Analysis, scenes: &[Scene], t: f64, w
         exposure: (1.0 + 0.1 * energy) * (1.0 - 0.85 * dark),
         saturation: (1.0 - 0.45 * tension + 0.15 * drop_env as f32).clamp(0.4, 1.2) * (1.0 - 0.8 * dark),
         post,
+        wipe: 0,
+        reset: false,
     }
 }
 
@@ -817,6 +820,7 @@ mod tests {
             backdrop: vec![],
             overlay: vec![],
             space: vec![],
+            comp: vec![],
             palettes: vec![["#000000".into(), "#ff0000".into(), "#00ff00".into(), "#0000ff".into()]],
         };
         let gen = |_, _, r| Some(genome::random(&blocks, r));

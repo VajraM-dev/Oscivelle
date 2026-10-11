@@ -42,6 +42,14 @@ pub struct Genome {
     pub blend: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub regime: String,
+    /// Engine-2 recipe (genome::TEMPLATES; "" = the feedback recipe), the second emitter of a "dual" look,
+    /// and the display-only comp block (kind comp; "" = none). Empty = left out of the JSON, so saved ids hold.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub template: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub emitter_b: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comp: String,
 }
 
 impl Genome {
@@ -58,13 +66,14 @@ impl Genome {
             2 => &mut self.colour,
             3 => &mut self.backdrop,
             4 => &mut self.overlay,
-            _ => &mut self.space,
+            5 => &mut self.space,
+            _ => &mut self.comp,
         })
     }
 
     /// Uses the engine-2 template (has any engine-2 gene).
     pub fn is_v2(&self) -> bool {
-        !self.space.is_empty() || !self.blend.is_empty() || !self.regime.is_empty()
+        !self.space.is_empty() || !self.blend.is_empty() || !self.regime.is_empty() || !self.template.is_empty()
     }
 
     /// Has a backdrop or overlay (so it also has a layer pass).
@@ -74,11 +83,17 @@ impl Genome {
 
     /// Keeps only finite tuned values whose key names a param of this genome's blocks.
     pub fn prune(&mut self, blocks: &Blocks) {
-        let (Ok(parts), Ok(layers), Ok(space)) = (blocks.parts(self), blocks.layer_parts(self), blocks.space_part(self)) else { return self.params.clear() };
+        let (Ok(parts), Ok(layers), Ok(space), Ok(eb), Ok(comp)) =
+            (blocks.parts(self), blocks.layer_parts(self), blocks.space_part(self), blocks.emitter_b_part(self), blocks.comp_part(self))
+        else {
+            return self.params.clear();
+        };
         let keys: Vec<String> = parts
             .into_iter()
             .chain(layers.into_iter().flatten())
             .chain(space)
+            .chain(eb)
+            .chain(comp)
             .flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty()).map(|p| param_key(&b.id, &p.name)))
             .collect();
         self.params.retain(|k, v| keys.contains(k) && v.is_finite());
@@ -109,6 +124,8 @@ pub struct Blocks {
     pub overlay: Vec<Block>,
     /// Engine-2 space folds (optional kind).
     pub space: Vec<Block>,
+    /// Engine-2 display-only framings (optional kind).
+    pub comp: Vec<Block>,
     /// Palette bank, sRGB hex.
     pub palettes: Vec<[String; 4]>,
 }
@@ -120,12 +137,12 @@ struct BlockToml {
     params: Vec<ParamRange>,
 }
 
-/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last three (layers, space) are optional.
-pub const KINDS: [&str; 6] = ["motion", "emitter", "colour", "backdrop", "overlay", "space"];
+/// Block kinds; `SLOTS` and the `Blocks` lists follow this order. The last four (layers, space, comp) are optional.
+pub const KINDS: [&str; 7] = ["motion", "emitter", "colour", "backdrop", "overlay", "space", "comp"];
 
 /// Param slots per kind: 8 for the feedback (scene params 0..7), then 4 + 2 for the layers (8..13);
-/// space (engine 2) uses slots 14..15.
-const SLOTS: [usize; 6] = [3, 3, 2, 4, 2, 2];
+/// space (engine 2) uses slots 14..15; comp (engine 2, display only) has no params.
+const SLOTS: [usize; 7] = [3, 3, 2, 4, 2, 2, 0];
 
 fn kind_index(kind: &str) -> Result<usize> {
     KINDS.iter().position(|k| *k == kind).with_context(|| format!("unknown kind {kind}"))
@@ -159,6 +176,7 @@ const V2_BLOCKS: &[&str] = &[
     "space_droste", "space_hyper", "space_kaleido", "space_kifs", "space_mirror", "space_polar",
     "motion_erode", "motion_etch", "motion_mosh", "motion_sort",
     "emit_cells", "emit_hypertile", "emit_kifs3d", "emit_lyapunov", "emit_mandelbox", "emit_orbit", "emit_sdftunnel", "emit_truchet", "emit_warpfbm",
+    "comp_echo", "comp_kaleido", "comp_mirror", "comp_slitscan",
 ];
 
 impl Blocks {
@@ -169,7 +187,7 @@ impl Blocks {
             palettes: Vec<[String; 4]>,
         }
         let pal: Pal = toml::from_str(&std::fs::read_to_string(dir.join("palettes.toml")).context("blocks/palettes.toml")?)?;
-        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], space: vec![], palettes: pal.palettes };
+        let mut b = Blocks { motion: vec![], emitter: vec![], colour: vec![], backdrop: vec![], overlay: vec![], space: vec![], comp: vec![], palettes: pal.palettes };
         let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?.filter_map(|e| Some(e.ok()?.path())).collect();
         paths.sort();
         for path in paths {
@@ -215,9 +233,19 @@ impl Blocks {
         Self::opt(&self.space, &g.space)
     }
 
+    /// The genome's comp block ("" = none), or an error naming an unknown id.
+    pub fn comp_part(&self, g: &Genome) -> Result<Option<&Block>> {
+        Self::opt(&self.comp, &g.comp)
+    }
+
+    /// The second emitter of a "dual" look ("" = none), or an error naming an unknown id.
+    pub fn emitter_b_part(&self, g: &Genome) -> Result<Option<&Block>> {
+        Self::opt(&self.emitter, &g.emitter_b)
+    }
+
     /// The blocks of `kind`.
     pub fn list(&self, kind: &str) -> Result<&Vec<Block>> {
-        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space][kind_index(kind)?])
+        Ok([&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space, &self.comp][kind_index(kind)?])
     }
 
     fn list_mut(&mut self, kind: &str) -> Result<&mut Vec<Block>> {
@@ -227,7 +255,8 @@ impl Blocks {
             2 => &mut self.colour,
             3 => &mut self.backdrop,
             4 => &mut self.overlay,
-            _ => &mut self.space,
+            5 => &mut self.space,
+            _ => &mut self.comp,
         })
     }
 
@@ -260,6 +289,7 @@ impl Blocks {
             backdrop: pick(&self.backdrop, |g| &g.backdrop),
             overlay: pick(&self.overlay, |g| &g.overlay),
             space: pick(&self.space, |g| &g.space),
+            comp: pick(&self.comp, |g| &g.comp),
             palettes,
         }
     }
@@ -284,7 +314,7 @@ impl Blocks {
 
     /// The range of param `key` (see `param_key`).
     fn param(&self, key: &str) -> Option<&ParamRange> {
-        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space].into_iter().flatten();
+        let all = [&self.motion, &self.emitter, &self.colour, &self.backdrop, &self.overlay, &self.space, &self.comp].into_iter().flatten();
         all.flat_map(|b| b.params.iter().filter(|p| !p.name.is_empty() && param_key(&b.id, &p.name) == key)).next()
     }
 }
@@ -352,6 +382,10 @@ const NO_SPACE: &str = "fn space(p: vec2<f32>) -> vec2<f32> { return p; }";
 
 /// Engine-2 blend modes of the emitter over the feedback; "" = add (the engine-1 recipe).
 pub const BLENDS: [&str; 4] = ["screen", "difference", "multiply", "lighten"];
+
+/// Engine-2 recipes besides feedback ("" in Genome::template): "stateless" draws the emitter fresh every frame
+/// (no trails, crisp 3D); "dual" adds a second emitter (Genome::emitter_b) over the feedback.
+pub const TEMPLATES: [&str; 2] = ["stateless", "dual"];
 
 fn blend_wgsl(name: &str) -> String {
     let e = match name {
@@ -603,6 +637,30 @@ pub fn mutate_v2(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
     out
 }
 
+/// Engine-2 phrase variant: the same look with one structural change: another space fold (or none),
+/// another comp framing (or none), or a fresh cosine palette. Never the motion, emitter, blend, recipe or
+/// regime (those can go black, and variants aren't judged). `r` = 64-bit hash.
+// ponytail: unjudged; run variants through the judge if one ever renders black.
+pub fn vary(g: &Genome, blocks: &Blocks, r: u64) -> Genome {
+    let h = |k: u64| crate::types::hash(r, k);
+    // Another id of `list` or "" (none), never the current one.
+    let other = |list: &[Block], cur: &str, k: u64| {
+        let ids: Vec<&str> = std::iter::once("").chain(list.iter().map(|b| b.id.as_str())).filter(|id| *id != cur).collect();
+        ids[(h(k) % ids.len() as u64) as usize].to_string()
+    };
+    let mut out = g.clone();
+    match h(1) % 3 {
+        0 if !blocks.space.is_empty() => out.space = other(&blocks.space, &g.space, 2),
+        1 if !blocks.comp.is_empty() => out.comp = other(&blocks.comp, &g.comp, 3),
+        _ => out.palette = cosine_palette(h(4)),
+    }
+    if out.palette != g.palette && out.post.tint_amount > 0.0 {
+        out.post.tint = crate::scenes::hex(&out.palette[2]).unwrap_or([1.0; 3]);
+    }
+    out.prune(blocks);
+    out
+}
+
 fn nth_id(list: &[Block], i: usize) -> String {
     list[i % list.len()].id.clone()
 }
@@ -707,6 +765,7 @@ mod tests {
         assert_eq!((v1.emitter.len(), v1.colour.len(), v1.overlay.len(), v1.space.len(), v1.palettes.len()), (8, 5, 3, 0, 30));
         let v2 = b.pinned(2);
         assert!(v1.motion.iter().all(|m| v2.motion.iter().any(|x| x.id == m.id)));
+        assert!(v1.comp.is_empty());
     }
 
     fn space_block(id: &str, wgsl: &str) -> Block {
@@ -779,8 +838,8 @@ mod tests {
     #[test]
     fn engine2_block_helpers_are_prefixed() {
         let b = blocks().pinned(2);
-        let contract = ["motion", "motion_decay", "emit", "colour", "space"];
-        for blk in [&b.motion, &b.emitter, &b.space].into_iter().flatten().filter(|x| V2_BLOCKS.contains(&x.id.as_str())) {
+        let contract = ["motion", "motion_decay", "emit", "colour", "space", "comp"];
+        for blk in [&b.motion, &b.emitter, &b.space, &b.comp].into_iter().flatten().filter(|x| V2_BLOCKS.contains(&x.id.as_str())) {
             for line in blk.wgsl.lines().filter(|l| l.starts_with("fn ") || l.starts_with("const ")) {
                 let name = line.split([' ', '(', ':']).nth(1).unwrap_or_default();
                 assert!(contract.contains(&name) || name.starts_with(&blk.id), "{}: helper {name} needs the prefix {}", blk.id, blk.id);
@@ -799,5 +858,29 @@ mod tests {
         assert_eq!(sig(wgsl(&g, &b).unwrap()), "c741eb434d028a27");
         assert_eq!(sig(layers_wgsl(&layered, &b).unwrap().unwrap()), "f1291d26fa6fffb5");
         assert_eq!(sig(format!("{:?}", to_scene(&layered, &b, Path::new(".")).unwrap().params)), "c4cc527d35ec0a1a");
+    }
+
+    #[test]
+    fn vary_changes_exactly_one_structural_gene() {
+        let mut b = blocks().pinned(1);
+        for k in 0..2 {
+            b.add("space", space_block(&format!("space_t{k}"), "")).unwrap();
+            b.add("comp", Block { id: format!("comp_t{k}"), params: vec![], wgsl: String::new(), toml: String::new() }).unwrap();
+        }
+        let mono = crate::regime::get("mono").unwrap();
+        let g = Genome { space: "space_t0".into(), regime: mono.name.into(), template: "stateless".into(), post: mono.post, ..genome() };
+        let mut kinds = std::collections::HashSet::new();
+        for r in 0..48u64 {
+            let v = vary(&g, &b, crate::types::hash(5, r));
+            assert_eq!(v, vary(&g, &b, crate::types::hash(5, r)), "deterministic");
+            let changed = [v.space != g.space, v.comp != g.comp, v.palette != g.palette];
+            assert_eq!(changed.iter().filter(|&&c| c).count(), 1, "{v:?}");
+            assert_eq!((&v.motion, &v.emitter, &v.colour, &v.blend, &v.regime, &v.template), (&g.motion, &g.emitter, &g.colour, &g.blend, &g.regime, &g.template));
+            if v.palette != g.palette {
+                assert_eq!(v.post.tint, crate::scenes::hex(&v.palette[2]).unwrap(), "mono tint follows the palette");
+            }
+            kinds.insert(changed.iter().position(|&c| c).unwrap());
+        }
+        assert_eq!(kinds.len(), 3, "fold, comp and palette changes all occur");
     }
 }
